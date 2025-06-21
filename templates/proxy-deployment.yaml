@@ -5,6 +5,12 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "my-jupyterhub.proxy.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+  annotations:
+    {{- include "my-jupyterhub.proxy.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.deployment.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
 spec:
   replicas: 1
   strategy:
@@ -16,12 +22,30 @@ spec:
     metadata:
       labels:
         {{- include "my-jupyterhub.proxy.labels" . | nindent 8 }}
+        {{- include "my-jupyterhub.owner.labels" . | nindent 8 }}
+        {{- include "my-jupyterhub.environment.labels" . | nindent 8 }}
         hub.jupyter.org/network-access-hub: "true"
+      annotations:
+        {{- include "my-jupyterhub.proxy.annotations" . | nindent 8 }}
+        {{- include "my-jupyterhub.pod.annotations" . | nindent 8 }}
+        {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 8 }}
+        {{- if .Values.proxy.https.enabled }}
+        checksum/https-cert: {{ include "my-jupyterhub.https.secretName" . | sha256sum }}
+        {{- end }}
     spec:
+      securityContext:
+        {{- toYaml .Values.security.podSecurityContext | nindent 8 }}
+      
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
       containers:
       - name: chp
         image: "{{ .Values.proxy.chp.image.repository }}:{{ .Values.proxy.chp.image.tag }}"
         imagePullPolicy: {{ .Values.proxy.chp.image.pullPolicy }}
+        
         command:
           - configurable-http-proxy
           - --ip=0.0.0.0
@@ -29,27 +53,124 @@ spec:
           - --api-port=8001
           - --default-target=http://{{ include "my-jupyterhub.hub.fullname" . }}:8081
           - --error-target=http://{{ include "my-jupyterhub.hub.fullname" . }}:8081/hub/error
+          {{- if .Values.proxy.https.enabled }}
+          - --ssl-key=/etc/ssl/certs/jupyterhub/tls.key
+          - --ssl-cert=/etc/ssl/certs/jupyterhub/tls.crt
+          - --port=8443
+          {{- if .Values.proxy.https.redirect }}
+          - --redirect-port=8000
+          {{- else }}
+          - --insecure
+          {{- end }}
+          {{- else }}
+          - --port=8000
+          {{- end }}
+          {{- range .Values.proxy.chp.extraCommandLineFlags }}
+          - {{ . }}
+          {{- end }}
+        
         env:
         - name: CONFIGPROXY_AUTH_TOKEN
           valueFrom:
             secretKeyRef:
-              name: hub-secret
+              name: {{ include "my-jupyterhub.hub.fullname" . }}-secret
               key: proxy.token
+        {{- if .Values.proxy.https.enabled }}
+        - name: CONFIGPROXY_SSL_KEY
+          value: /etc/ssl/certs/jupyterhub/tls.key
+        - name: CONFIGPROXY_SSL_CERT
+          value: /etc/ssl/certs/jupyterhub/tls.crt
+        {{- if .Values.proxy.https.redirect }}
+        - name: CONFIGPROXY_SSL_REDIRECT
+          value: "true"
+        {{- end }}
+        {{- if .Values.proxy.https.trustBundle.enabled }}
+        - name: SSL_CERT_DIR
+          value: /etc/ssl/certs/ca-certificates
+        - name: REQUESTS_CA_BUNDLE
+          value: /etc/ssl/certs/ca-certificates/ca-bundle.crt
+        {{- end }}
+        {{- end }}
+        {{- with .Values.proxy.chp.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        
         ports:
         - name: http
           containerPort: 8000
+          protocol: TCP
         - name: api
           containerPort: 8001
           protocol: TCP
-        {{- if .Values.proxy.chp.extraPorts }}
-        {{- toYaml .Values.proxy.chp.extraPorts | nindent 8 }}
+        {{- if .Values.proxy.https.enabled }}
+        - name: https
+          containerPort: 8443
+          protocol: TCP
         {{- end }}
-        resources:
-          {{- toYaml .Values.proxy.chp.resources | nindent 10 }}
-      {{- with .Values.global.imagePullSecrets }}
-      imagePullSecrets:
+        {{- with .Values.proxy.chp.extraPorts }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        
+        {{- if .Values.proxy.chp.livenessProbe.enabled }}
+        livenessProbe:
+          httpGet:
+            path: /_chp_healthz
+            port: {{ .Values.proxy.https.enabled | ternary "https" "http" }}
+            scheme: {{ .Values.proxy.https.enabled | ternary "HTTPS" "HTTP" }}
+          initialDelaySeconds: {{ .Values.proxy.chp.livenessProbe.initialDelaySeconds | default 60 }}
+          periodSeconds: {{ .Values.proxy.chp.livenessProbe.periodSeconds | default 10 }}
+          failureThreshold: {{ .Values.proxy.chp.livenessProbe.failureThreshold | default 3 }}
+          timeoutSeconds: {{ .Values.proxy.chp.livenessProbe.timeoutSeconds | default 3 }}
+        {{- end }}
+        
+        {{- if .Values.proxy.chp.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: /_chp_healthz
+            port: {{ .Values.proxy.https.enabled | ternary "https" "http" }}
+            scheme: {{ .Values.proxy.https.enabled | ternary "HTTPS" "HTTP" }}
+          initialDelaySeconds: {{ .Values.proxy.chp.readinessProbe.initialDelaySeconds | default 0 }}
+          periodSeconds: {{ .Values.proxy.chp.readinessProbe.periodSeconds | default 2 }}
+          failureThreshold: {{ .Values.proxy.chp.readinessProbe.failureThreshold | default 3 }}
+          timeoutSeconds: {{ .Values.proxy.chp.readinessProbe.timeoutSeconds | default 1 }}
+        {{- end }}
+        
+        securityContext:
+          {{- toYaml .Values.security.containerSecurityContext | nindent 10 }}
+        
+        resources:
+          {{- include "my-jupyterhub.proxy.resources" . | nindent 10 }}
+        
+        {{- if .Values.proxy.https.enabled }}
+        volumeMounts:
+        - name: https-certs
+          mountPath: /etc/ssl/certs/jupyterhub
+          readOnly: true
+        {{- if .Values.proxy.https.trustBundle.enabled }}
+        - name: ca-bundle
+          mountPath: /etc/ssl/certs/ca-certificates
+          readOnly: true
+        {{- end }}
+        {{- end }}
+
+      {{- if .Values.proxy.https.enabled }}
+      volumes:
+      - name: https-certs
+        secret:
+          secretName: {{ include "my-jupyterhub.https.secretName" . }}
+          defaultMode: 0444
+          items:
+          - key: tls.crt
+            path: tls.crt
+          - key: tls.key
+            path: tls.key
+      {{- if .Values.proxy.https.trustBundle.enabled }}
+      - name: ca-bundle
+        configMap:
+          name: {{ include "my-jupyterhub.fullname" . }}-ca-bundle
+          defaultMode: 0444
       {{- end }}
-      {{- with .Values.proxy.chp.extraEnv }}
-      {{- toYaml . | nindent 8 }}
       {{- end }}
+
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30

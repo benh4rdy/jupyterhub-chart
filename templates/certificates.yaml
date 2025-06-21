@@ -1,0 +1,291 @@
+{{/*
+On-Premise Certificate Secret Templates for JupyterHub
+Optimized for closed corporate environments with internal PKI
+*/}}
+
+{{- if and .Values.proxy.https.enabled (eq .Values.proxy.https.type "secret") }}
+---
+# =============================================================================
+# EXTERNAL CERTIFICATE SECRET FOR CORPORATE PKI
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.proxy.https.secret.name | default (printf "%s-https-cert" (include "my-jupyterhub.fullname" .)) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.config.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: https-certificate
+    jupyterhub.io/certificate-type: external
+    jupyterhub.io/certificate-source: corporate-pki
+  annotations:
+    {{- include "my-jupyterhub.secret.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
+    cert-manager.io/managed: "false"
+    security.company.com/certificate-type: "corporate"
+    security.company.com/certificate-authority: "{{ .Values.proxy.https.corporate.ca | default "Internal Corporate CA" }}"
+    security.company.com/renewal-contact: "{{ .Values.proxy.https.corporate.contact | default "security@company.com" }}"
+    # Certificate management instructions
+    kubectl.kubernetes.io/certificate-update: |
+      To update this certificate:
+      1. Obtain new certificate from corporate CA
+      2. Run: kubectl create secret tls {{ .Values.proxy.https.secret.name | default (printf "%s-https-cert" (include "my-jupyterhub.fullname" .)) }} \
+           --cert=path/to/server.crt \
+           --key=path/to/server.key \
+           --namespace={{ .Release.Namespace }} \
+           --dry-run=client -o yaml | kubectl apply -f -
+      3. Restart proxy: kubectl rollout restart deployment/{{ include "my-jupyterhub.fullname" . }}-proxy -n {{ .Release.Namespace }}
+type: kubernetes.io/tls
+{{- if and .Values.proxy.https.secret.crt .Values.proxy.https.secret.key }}
+data:
+  tls.crt: {{ .Values.proxy.https.secret.crt | b64enc }}
+  tls.key: {{ .Values.proxy.https.secret.key | b64enc }}
+{{- else }}
+# Placeholder data - replace with actual certificates
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi4uLiAoUGxhY2Vob2xkZXIgLSByZXBsYWNlIHdpdGggYWN0dWFsIGNlcnRpZmljYXRlKSAuLi4KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ==
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCi4uLiAoUGxhY2Vob2xkZXIgLSByZXBsYWNlIHdpdGggYWN0dWFsIHByaXZhdGUga2V5KSAuLi4KLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQ==
+{{- end }}
+{{- end }}
+
+{{- if .Values.proxy.https.corporateCA.enabled }}
+---
+# =============================================================================
+# CORPORATE CA CERTIFICATE BUNDLE
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "my-jupyterhub.fullname" . }}-corporate-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.config.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ca-certificates
+    jupyterhub.io/certificate-type: corporate-ca
+  annotations:
+    {{- include "my-jupyterhub.configmap.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
+    security.company.com/ca-purpose: "corporate-trust-bundle"
+    security.company.com/ca-count: "{{ len .Values.proxy.https.corporateCA.certificates }}"
+    security.company.com/update-policy: "manual"
+data:
+  # Individual CA certificates
+  {{- range $name, $cert := .Values.proxy.https.corporateCA.certificates }}
+  {{ $name }}.crt: |
+{{ $cert | indent 4 }}
+  {{- end }}
+  
+  # Combined CA bundle for applications
+  ca-bundle.crt: |
+    # Corporate Certificate Authority Bundle
+    # Generated: {{ now | date "2006-01-02 15:04:05 UTC" }}
+    # Environment: {{ .Values.global.environment | default "production" }}
+{{- range $name, $cert := .Values.proxy.https.corporateCA.certificates }}
+    # {{ $name }}
+{{ $cert | indent 4 }}
+{{- end }}
+
+  # System CA bundle update script
+  update-ca-certificates.sh: |
+    #!/bin/bash
+    # Script to update system CA certificates with corporate bundle
+    set -e
+    
+    echo "Updating system CA certificates..."
+    
+    # Copy corporate CA certificates to system trust store
+    {{- range $name, $cert := .Values.proxy.https.corporateCA.certificates }}
+    cp /etc/ssl/certs/corporate-ca/{{ $name }}.crt /usr/local/share/ca-certificates/
+    {{- end }}
+    
+    # Update system CA bundle
+    update-ca-certificates
+    
+    echo "Corporate CA certificates installed successfully"
+    
+    # Verify installation
+    {{- range $name, $cert := .Values.proxy.https.corporateCA.certificates }}
+    echo "Verifying {{ $name }}..."
+    openssl x509 -in /etc/ssl/certs/corporate-ca/{{ $name }}.crt -text -noout | grep -E "(Subject|Issuer|Not After)"
+    {{- end }}
+{{- end }}
+
+{{- if .Values.proxy.https.intermediate.enabled }}
+---
+# =============================================================================
+# INTERMEDIATE CERTIFICATE CHAIN
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "my-jupyterhub.fullname" . }}-intermediate-certs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.config.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: intermediate-certificates
+    jupyterhub.io/certificate-type: intermediate-chain
+  annotations:
+    {{- include "my-jupyterhub.secret.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
+    security.company.com/certificate-purpose: "intermediate-chain"
+type: Opaque
+data:
+  # Full certificate chain (server + intermediate + root)
+  full-chain.crt: {{ .Values.proxy.https.intermediate.fullChain | default "" | b64enc }}
+  
+  # Intermediate certificates only
+  intermediate-chain.crt: {{ .Values.proxy.https.intermediate.chain | default "" | b64enc }}
+  
+  # Root CA certificate
+  root-ca.crt: {{ .Values.proxy.https.intermediate.rootCA | default "" | b64enc }}
+{{- end }}
+
+{{- if .Values.proxy.https.wildcard.enabled }}
+---
+# =============================================================================
+# WILDCARD CERTIFICATE FOR SUBDOMAIN SUPPORT
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "my-jupyterhub.fullname" . }}-wildcard-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.config.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wildcard-certificate
+    jupyterhub.io/certificate-type: wildcard
+  annotations:
+    {{- include "my-jupyterhub.secret.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
+    security.company.com/certificate-type: "wildcard"
+    security.company.com/domains: "{{ join "," .Values.proxy.https.wildcard.domains }}"
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ .Values.proxy.https.wildcard.cert | default "" | b64enc }}
+  tls.key: {{ .Values.proxy.https.wildcard.key | default "" | b64enc }}
+{{- end }}
+
+{{- if .Values.proxy.https.clientAuth.enabled }}
+---
+# =============================================================================
+# CLIENT CERTIFICATE AUTHORITY (FOR MUTUAL TLS)
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "my-jupyterhub.fullname" . }}-client-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.config.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: client-ca-certificates
+    jupyterhub.io/certificate-type: client-ca
+  annotations:
+    {{- include "my-jupyterhub.secret.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
+    security.company.com/certificate-purpose: "client-authentication"
+    security.company.com/mtls-mode: "{{ .Values.proxy.https.clientAuth.mode | default "verify_if_given" }}"
+type: Opaque
+data:
+  # Client CA certificate for verifying client certificates
+  client-ca.crt: {{ .Values.proxy.https.clientAuth.caCert | default "" | b64enc }}
+  
+  {{- if .Values.proxy.https.clientAuth.crl }}
+  # Certificate Revocation List
+  client.crl: {{ .Values.proxy.https.clientAuth.crl | b64enc }}
+  {{- end }}
+{{- end }}
+
+---
+# =============================================================================
+# CERTIFICATE MANAGEMENT JOB (OPTIONAL)
+# =============================================================================
+{{- if .Values.proxy.https.management.autoUpdate.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "my-jupyterhub.fullname" . }}-cert-check
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: certificate-management
+    jupyterhub.io/job-type: certificate-check
+  annotations:
+    {{- include "my-jupyterhub.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
+    security.company.com/job-purpose: "certificate-expiry-check"
+spec:
+  schedule: "{{ .Values.proxy.https.management.autoUpdate.schedule | default "0 2 * * 0" }}"  # Weekly on Sunday at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "my-jupyterhub.labels" . | nindent 12 }}
+            app.kubernetes.io/component: certificate-check
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: cert-checker
+            image: alpine/openssl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              
+              echo "Checking certificate expiry for JupyterHub..."
+              
+              # Extract certificate from secret
+              kubectl get secret {{ include "my-jupyterhub.https.secretName" . }} -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/cert.crt
+              
+              # Check expiry date
+              EXPIRY_DATE=$(openssl x509 -in /tmp/cert.crt -noout -enddate | cut -d= -f2)
+              EXPIRY_TIMESTAMP=$(date -d "$EXPIRY_DATE" +%s)
+              CURRENT_TIMESTAMP=$(date +%s)
+              DAYS_UNTIL_EXPIRY=$(( (EXPIRY_TIMESTAMP - CURRENT_TIMESTAMP) / 86400 ))
+              
+              echo "Certificate expires in $DAYS_UNTIL_EXPIRY days"
+              
+              # Alert if expiring soon
+              if [ $DAYS_UNTIL_EXPIRY -lt {{ .Values.proxy.https.management.autoUpdate.warningDays | default 30 }} ]; then
+                echo "WARNING: Certificate expires in less than {{ .Values.proxy.https.management.autoUpdate.warningDays | default 30 }} days!"
+                
+                # Send notification (customize based on your notification system)
+                {{- if .Values.proxy.https.management.autoUpdate.webhook }}
+                curl -X POST "{{ .Values.proxy.https.management.autoUpdate.webhook }}" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"text\":\"JupyterHub SSL certificate expires in $DAYS_UNTIL_EXPIRY days\"}"
+                {{- end }}
+                
+                {{- if .Values.proxy.https.management.autoUpdate.email }}
+                echo "JupyterHub SSL certificate expires in $DAYS_UNTIL_EXPIRY days" | \
+                  mail -s "Certificate Expiry Warning" {{ .Values.proxy.https.management.autoUpdate.email }}
+                {{- end }}
+              fi
+              
+              echo "Certificate check completed"
+            env:
+            - name: KUBECONFIG
+              value: /tmp/kubeconfig
+            volumeMounts:
+            - name: kubeconfig
+              mountPath: /tmp
+              readOnly: true
+          volumes:
+          - name: kubeconfig
+            secret:
+              secretName: cert-checker-kubeconfig
+          serviceAccountName: cert-checker
+{{- end }}

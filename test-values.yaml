@@ -1,0 +1,39 @@
+global:
+  environment: development
+
+proxy:
+  https:
+    enabled: true
+    type: self-signed
+    hosts:
+      - jupyter.local
+      - localhost
+    
+    selfSigned:
+      enabled: true
+      commonName: "jupyter.local"
+      validityDays: 365
+      altNames:
+        - localhost
+        - jupyter.internal
+
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 30080
+    httpsPort: 443
+    httpsNodePort: 30443
+
+hub:
+  config:
+    JupyterHub:
+      authenticator_class: 'jupyterhub.auth.DummyAuthenticator'
+    DummyAuthenticator:
+      password: 'test'
+    Authenticator:
+      admin_users:
+        - admin
+
+singleuser:
+  storage:
+    type: none  # For initial testing

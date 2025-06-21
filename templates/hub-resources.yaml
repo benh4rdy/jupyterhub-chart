@@ -1,0 +1,275 @@
+{{/*
+Resource Management Configuration Template
+This template provides comprehensive resource management utilities for JupyterHub components
+*/}}
+
+{{/*
+Hub Resource Configuration
+*/}}
+{{- define "my-jupyterhub.hub.resources" -}}
+{{- if .Values.hub.resources }}
+resources:
+  {{- if .Values.hub.resources.requests }}
+  requests:
+    {{- if .Values.hub.resources.requests.cpu }}
+    cpu: {{ .Values.hub.resources.requests.cpu | quote }}
+    {{- end }}
+    {{- if .Values.hub.resources.requests.memory }}
+    memory: {{ .Values.hub.resources.requests.memory | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if .Values.hub.resources.limits }}
+  limits:
+    {{- if .Values.hub.resources.limits.cpu }}
+    cpu: {{ .Values.hub.resources.limits.cpu | quote }}
+    {{- end }}
+    {{- if .Values.hub.resources.limits.memory }}
+    memory: {{ .Values.hub.resources.limits.memory | quote }}
+    {{- end }}
+  {{- end }}
+{{- else }}
+# Default hub resources if not specified
+resources:
+  requests:
+    cpu: "200m"
+    memory: "512Mi"
+  limits:
+    cpu: "2000m"
+    memory: "2Gi"
+{{- end }}
+{{- end }}
+
+{{/*
+Proxy Resource Configuration
+*/}}
+{{- define "my-jupyterhub.proxy.resources" -}}
+{{- if .Values.proxy.chp.resources }}
+resources:
+  {{- if .Values.proxy.chp.resources.requests }}
+  requests:
+    {{- if .Values.proxy.chp.resources.requests.cpu }}
+    cpu: {{ .Values.proxy.chp.resources.requests.cpu | quote }}
+    {{- end }}
+    {{- if .Values.proxy.chp.resources.requests.memory }}
+    memory: {{ .Values.proxy.chp.resources.requests.memory | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if .Values.proxy.chp.resources.limits }}
+  limits:
+    {{- if .Values.proxy.chp.resources.limits.cpu }}
+    cpu: {{ .Values.proxy.chp.resources.limits.cpu | quote }}
+    {{- end }}
+    {{- if .Values.proxy.chp.resources.limits.memory }}
+    memory: {{ .Values.proxy.chp.resources.limits.memory | quote }}
+    {{- end }}
+  {{- end }}
+{{- else }}
+# Default proxy resources if not specified
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "1000m"
+    memory: "512Mi"
+{{- end }}
+{{- end }}
+
+{{/*
+Singleuser Resource Configuration for KubeSpawner
+*/}}
+{{- define "my-jupyterhub.singleuser.resources" -}}
+{{- if .Values.singleuser.resources }}
+# Primary resource configuration
+{{- if .Values.singleuser.resources.requests }}
+c.KubeSpawner.cpu_guarantee = {{ .Values.singleuser.resources.requests.cpu | default "0.1" }}
+c.KubeSpawner.mem_guarantee = '{{ .Values.singleuser.resources.requests.memory | default "512Mi" }}'
+{{- else }}
+# Fallback to legacy configuration
+c.KubeSpawner.cpu_guarantee = {{ .Values.singleuser.cpu.guarantee | default 0.1 }}
+c.KubeSpawner.mem_guarantee = '{{ .Values.singleuser.memory.guarantee | default "512M" }}'
+{{- end }}
+
+{{- if .Values.singleuser.resources.limits }}
+c.KubeSpawner.cpu_limit = {{ .Values.singleuser.resources.limits.cpu | default "2" }}
+c.KubeSpawner.mem_limit = '{{ .Values.singleuser.resources.limits.memory | default "4Gi" }}'
+{{- else }}
+# Fallback to legacy configuration
+c.KubeSpawner.cpu_limit = {{ .Values.singleuser.cpu.limit | default 2 }}
+c.KubeSpawner.mem_limit = '{{ .Values.singleuser.memory.limit | default "2G" }}'
+{{- end }}
+
+# Extended resources (GPUs, etc.)
+{{- if .Values.singleuser.resources.extended }}
+c.KubeSpawner.extra_resource_limits = {{ .Values.singleuser.resources.extended | toJson }}
+c.KubeSpawner.extra_resource_guarantees = {{ .Values.singleuser.resources.extended | toJson }}
+{{- end }}
+
+{{- else }}
+# Default singleuser resources if not specified
+c.KubeSpawner.cpu_guarantee = {{ .Values.singleuser.cpu.guarantee | default 0.1 }}
+c.KubeSpawner.cpu_limit = {{ .Values.singleuser.cpu.limit | default 2 }}
+c.KubeSpawner.mem_guarantee = '{{ .Values.singleuser.memory.guarantee | default "512M" }}'
+c.KubeSpawner.mem_limit = '{{ .Values.singleuser.memory.limit | default "2G" }}'
+{{- end }}
+{{- end }}
+
+{{/*
+Resource Policy Configuration
+*/}}
+{{- define "my-jupyterhub.resourcePolicy" -}}
+{{- if .Values.singleuser.resources.policy }}
+# Quality of Service Class Configuration
+{{- if eq .Values.singleuser.resources.policy.qosClass "Guaranteed" }}
+# Guaranteed QoS: requests == limits for all resources
+c.KubeSpawner.extra_pod_config = c.KubeSpawner.extra_pod_config or {}
+c.KubeSpawner.extra_pod_config['spec'] = c.KubeSpawner.extra_pod_config.get('spec', {})
+c.KubeSpawner.extra_pod_config['spec']['containers'] = c.KubeSpawner.extra_pod_config['spec'].get('containers', [{}])
+if c.KubeSpawner.extra_pod_config['spec']['containers']:
+    c.KubeSpawner.extra_pod_config['spec']['containers'][0]['resources'] = {
+        'requests': {
+            'cpu': str(c.KubeSpawner.cpu_limit),
+            'memory': c.KubeSpawner.mem_limit
+        },
+        'limits': {
+            'cpu': str(c.KubeSpawner.cpu_limit),
+            'memory': c.KubeSpawner.mem_limit
+        }
+    }
+{{- end }}
+
+# Resource enforcement
+{{- if .Values.singleuser.resources.policy.enforceResourceLimits }}
+c.KubeSpawner.enable_user_options = False  # Prevent users from overriding resource limits
+{{- end }}
+
+{{- end }}
+{{- end }}
+
+{{/*
+Resource Tier Profiles
+*/}}
+{{- define "my-jupyterhub.resourceTiers" -}}
+{{- if .Values.singleuser.resources.policy.tiers }}
+# Resource tier profiles for different user types
+resource_tiers = {
+{{- range $tierName, $tierConfig := .Values.singleuser.resources.policy.tiers }}
+    '{{ $tierName }}': {
+        'cpu_guarantee': {{ $tierConfig.requests.cpu | default "0.1" | quote }},
+        'cpu_limit': {{ $tierConfig.limits.cpu | default "1" | quote }},
+        'mem_guarantee': {{ $tierConfig.requests.memory | default "256Mi" | quote }},
+        'mem_limit': {{ $tierConfig.limits.memory | default "1Gi" | quote }},
+        {{- if $tierConfig.extended }}
+        'extra_resource_limits': {{ $tierConfig.extended | toJson }},
+        'extra_resource_guarantees': {{ $tierConfig.extended | toJson }},
+        {{- end }}
+    },
+{{- end }}
+}
+
+# Function to apply resource tier
+def apply_resource_tier(spawner, tier_name):
+    """Apply resource configuration from a named tier"""
+    if tier_name in resource_tiers:
+        tier = resource_tiers[tier_name]
+        spawner.cpu_guarantee = float(tier['cpu_guarantee'].rstrip('m')) / 1000 if tier['cpu_guarantee'].endswith('m') else float(tier['cpu_guarantee'])
+        spawner.cpu_limit = float(tier['cpu_limit'].rstrip('m')) / 1000 if tier['cpu_limit'].endswith('m') else float(tier['cpu_limit'])
+        spawner.mem_guarantee = tier['mem_guarantee']
+        spawner.mem_limit = tier['mem_limit']
+        
+        if 'extra_resource_limits' in tier:
+            spawner.extra_resource_limits = tier['extra_resource_limits']
+            spawner.extra_resource_guarantees = tier.get('extra_resource_guarantees', tier['extra_resource_limits'])
+
+# Make function available globally
+c.Spawner.apply_resource_tier = apply_resource_tier
+{{- end }}
+{{- end }}
+
+{{/*
+Resource Monitoring Configuration
+*/}}
+{{- define "my-jupyterhub.resourceMonitoring" -}}
+# Resource usage monitoring and alerting
+c.KubeSpawner.extra_annotations = c.KubeSpawner.extra_annotations or {}
+c.KubeSpawner.extra_annotations.update({
+    'jupyterhub.io/resource-tier': '{resource_tier}',
+    'jupyterhub.io/cpu-limit': '{cpu_limit}',
+    'jupyterhub.io/memory-limit': '{mem_limit}',
+    'jupyterhub.io/created-by': 'jupyterhub-spawner',
+})
+
+# Enable resource monitoring if Prometheus is available
+{{- if .Values.monitoring.prometheus.enabled }}
+c.KubeSpawner.extra_labels = c.KubeSpawner.extra_labels or {}
+c.KubeSpawner.extra_labels.update({
+    'prometheus.io/scrape': 'true',
+    'prometheus.io/port': '8888',
+    'prometheus.io/path': '/metrics',
+})
+{{- end }}
+{{- end }}
+
+{{/*
+Node Resource Affinity
+*/}}
+{{- define "my-jupyterhub.nodeResourceAffinity" -}}
+{{- if .Values.singleuser.resources.policy }}
+# Configure node affinity based on resource requirements
+def configure_node_affinity(spawner):
+    """Configure node affinity based on resource requirements"""
+    cpu_limit = float(spawner.cpu_limit)
+    mem_limit_bytes = spawner._parse_mem_str(spawner.mem_limit)
+    mem_limit_gi = mem_limit_bytes / (1024**3)
+    
+    # High resource requirements need larger nodes
+    if cpu_limit >= 4 or mem_limit_gi >= 8:
+        spawner.node_selector = spawner.node_selector or {}
+        spawner.node_selector.update({
+            'node-size': 'large',
+            'workload-type': 'compute-intensive'
+        })
+    
+    # GPU workloads need GPU nodes
+    if hasattr(spawner, 'extra_resource_limits') and spawner.extra_resource_limits:
+        if any('gpu' in k.lower() for k in spawner.extra_resource_limits.keys()):
+            spawner.node_selector = spawner.node_selector or {}
+            spawner.node_selector.update({
+                'accelerator': 'nvidia-gpu',
+                'workload-type': 'gpu-enabled'
+            })
+
+# Apply node affinity configuration
+c.KubeSpawner.pre_spawn_hook = configure_node_affinity
+{{- end }}
+{{- end }}
+
+{{/*
+Resource Validation
+*/}}
+{{- define "my-jupyterhub.resourceValidation" -}}
+# Resource validation and limits
+def validate_resources(spawner):
+    """Validate resource requests are within acceptable limits"""
+    max_cpu = {{ .Values.singleuser.resources.policy.maxCpuPerUser | default 16 }}
+    max_memory_gi = {{ .Values.singleuser.resources.policy.maxMemoryPerUser | default 32 }}
+    
+    if spawner.cpu_limit > max_cpu:
+        raise ValueError(f"CPU limit {spawner.cpu_limit} exceeds maximum allowed {max_cpu}")
+    
+    mem_bytes = spawner._parse_mem_str(spawner.mem_limit)
+    mem_gi = mem_bytes / (1024**3)
+    if mem_gi > max_memory_gi:
+        raise ValueError(f"Memory limit {mem_gi:.1f}Gi exceeds maximum allowed {max_memory_gi}Gi")
+
+# Apply validation
+if hasattr(c.KubeSpawner, 'pre_spawn_hook'):
+    original_hook = c.KubeSpawner.pre_spawn_hook
+    def combined_hook(spawner):
+        validate_resources(spawner)
+        if callable(original_hook):
+            original_hook(spawner)
+    c.KubeSpawner.pre_spawn_hook = combined_hook
+else:
+    c.KubeSpawner.pre_spawn_hook = validate_resources
+{{- end }}

@@ -4,120 +4,574 @@ metadata:
   name: {{ include "my-jupyterhub.hub.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.config.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub-config
+  annotations:
+    {{- include "my-jupyterhub.configmap.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
 data:
   jupyterhub_config.py: |
     import os
     import sys
+    import asyncio
+    from traitlets import Union
     
     # Add z2jh.py to path
     sys.path.insert(0, '/usr/local/etc/jupyterhub/')
     from z2jh import get_config, set_config_if_not_none
     
-    # Basic JupyterHub configuration
+    # =============================================================================
+    # BASIC JUPYTERHUB CONFIGURATION
+    # =============================================================================
+    
+    # Spawner class
     c.JupyterHub.spawner_class = 'kubespawner.KubeSpawner'
     
-    # KUBERNETES NETWORKING - Critical for pod-to-pod communication
+    # =============================================================================
+    # KUBERNETES NETWORKING CONFIGURATION
+    # =============================================================================
+    
+    # Hub networking - Critical for pod-to-pod communication
     c.JupyterHub.hub_ip = '0.0.0.0'  # Bind to all interfaces inside pod
     c.JupyterHub.hub_connect_ip = '{{ include "my-jupyterhub.hub.fullname" . }}'  # Service name for external connections
     c.JupyterHub.hub_port = 8081
-    
-    # Database configuration
-    {{- if eq .Values.hub.db.type "sqlite-pvc" }}
-    c.JupyterHub.db_url = 'sqlite:////srv/jupyterhub/jupyterhub.sqlite'
-    {{- else if eq .Values.hub.db.type "mysql" }}
-    c.JupyterHub.db_url = get_config("hub.db.url")
-    {{- else if eq .Values.hub.db.type "postgresql" }}
-    c.JupyterHub.db_url = get_config("hub.db.url")
-    {{- end }}
     
     # Proxy configuration
     c.ConfigurableHTTPProxy.api_url = 'http://{{ include "my-jupyterhub.proxy-api.fullname" . }}:8001'
     c.ConfigurableHTTPProxy.should_start = False
     
-    # Spawner configuration
+    # =============================================================================
+    # DATABASE CONFIGURATION
+    # =============================================================================
+    
+    {{- if eq .Values.hub.db.type "sqlite-pvc" }}
+    c.JupyterHub.db_url = 'sqlite:////srv/jupyterhub/jupyterhub.sqlite'
+    {{- else if eq .Values.hub.db.type "mysql" }}
+    db_password = os.environ.get('JPY_HUB_DB_PASSWORD', '')
+    c.JupyterHub.db_url = f'mysql+pymysql://{{ .Values.external.database.username }}:{db_password}@{{ .Values.external.database.host }}:{{ .Values.external.database.port }}/{{ .Values.external.database.database }}'
+    {{- else if eq .Values.hub.db.type "postgresql" }}
+    db_password = os.environ.get('JPY_HUB_DB_PASSWORD', '')
+    c.JupyterHub.db_url = f'postgresql://{{ .Values.external.database.username }}:{db_password}@{{ .Values.external.database.host }}:{{ .Values.external.database.port }}/{{ .Values.external.database.database }}?sslmode={{ .Values.external.database.sslMode }}'
+    {{- end }}
+    
+    # =============================================================================
+    # AUTHENTICATION CONFIGURATION
+    # =============================================================================
+    
+    {{- if eq .Values.auth.type "dummy" }}
+    # Dummy authenticator for development
+    c.JupyterHub.authenticator_class = 'jupyterhub.auth.DummyAuthenticator'
+    c.DummyAuthenticator.password = '{{ .Values.auth.dummy.password | default .Values.hub.config.DummyAuthenticator.password }}'
+    {{- else if eq .Values.auth.type "ldap" }}
+    # LDAP/Active Directory authenticator
+    c.JupyterHub.authenticator_class = 'ldapauthenticator.LDAPAuthenticator'
+    
+    # LDAP server configuration
+    c.LDAPAuthenticator.server_address = '{{ .Values.auth.ldap.server.address }}'
+    c.LDAPAuthenticator.use_ssl = {{ .Values.auth.ldap.server.use_ssl }}
+    
+    {{- if .Values.auth.ldap.server.ca_certs }}
+    # Custom CA certificate for LDAPS
+    c.LDAPAuthenticator.ca_certs = '/usr/local/etc/jupyterhub/ldap-ca/ca.crt'
+    {{- end }}
+    
+    # User authentication patterns
+    c.LDAPAuthenticator.bind_dn_template = {{ .Values.auth.ldap.bind_dn_template | toJson }}
+    
+    # User search configuration
+    {{- if .Values.auth.ldap.user_search_base }}
+    c.LDAPAuthenticator.user_search_base = '{{ .Values.auth.ldap.user_search_base }}'
+    c.LDAPAuthenticator.user_attribute = '{{ .Values.auth.ldap.user_attribute }}'
+    {{- end }}
+    
+    c.LDAPAuthenticator.lookup_dn = {{ .Values.auth.ldap.lookup_dn }}
+    
+    # Username validation
+    c.LDAPAuthenticator.valid_username_regex = r'{{ .Values.hub.config.LDAPAuthenticator.valid_username_regex }}'
+    
+    # Group-based access control
+    {{- if .Values.auth.ldap.allowed_groups }}
+    c.LDAPAuthenticator.allowed_groups = {{ .Values.auth.ldap.allowed_groups | toJson }}
+    {{- end }}
+    
+    {{- end }}
+    
+    # Admin users configuration
+    {{- if .Values.hub.config.Authenticator.admin_users }}
+    c.Authenticator.admin_users = {{ .Values.hub.config.Authenticator.admin_users | toJson }}
+    {{- end }}
+    
+    # Additional authenticator settings
+    c.Authenticator.auto_login = {{ .Values.hub.config.Authenticator.auto_login | default false }}
+    
+    {{- if .Values.hub.config.Authenticator.allowed_users }}
+    c.Authenticator.allowed_users = {{ .Values.hub.config.Authenticator.allowed_users | toJson }}
+    {{- end }}
+    
+    {{- if .Values.hub.config.Authenticator.blocked_users }}
+    c.Authenticator.blocked_users = {{ .Values.hub.config.Authenticator.blocked_users | toJson }}
+    {{- end }}
+    
+    # =============================================================================
+    # KUBESPAWNER CONFIGURATION
+    # =============================================================================
+    
+    # Basic spawner settings
     c.KubeSpawner.namespace = '{{ .Release.Namespace }}'
     c.KubeSpawner.start_timeout = {{ .Values.singleuser.startTimeout }}
     c.KubeSpawner.http_timeout = 120
     c.KubeSpawner.pod_name_template = '{{ .Values.singleuser.podNameTemplate }}'
     
-    # Single-user server configuration
+    # Single-user server image
     c.KubeSpawner.image = '{{ .Values.singleuser.image.repository }}:{{ .Values.singleuser.image.tag }}'
+    c.KubeSpawner.image_pull_policy = '{{ .Values.singleuser.image.pullPolicy }}'
     
-    # Authentication configuration
-    {{- if eq .Values.hub.config.JupyterHub.authenticator_class "jupyterhub.auth.DummyAuthenticator" }}
-    c.JupyterHub.authenticator_class = 'jupyterhub.auth.DummyAuthenticator'
-    c.DummyAuthenticator.password = get_config('hub.config.DummyAuthenticator.password', '')
-    {{- end }}
+    # Default URL for user servers
+    c.KubeSpawner.default_url = '{{ .Values.singleuser.defaultUrl }}'
     
-    # Admin users
-    {{- if .Values.hub.config.Authenticator.admin_users }}
-    c.Authenticator.admin_users = {{ .Values.hub.config.Authenticator.admin_users | toJson }}
-    {{- end }}
+    # =============================================================================
+    # KUBESPAWNER RESOURCE CONFIGURATION
+    # =============================================================================
     
-    # HTTPS configuration for self-signed certs
-    {{- if .Values.proxy.https.enabled }}
-    {{- if eq .Values.proxy.https.type "secret" }}
-    c.JupyterHub.ssl_cert = '/usr/local/etc/jupyterhub/secret/tls.crt'
-    c.JupyterHub.ssl_key = '/usr/local/etc/jupyterhub/secret/tls.key'
-    {{- end }}
-    {{- end }}
+    {{- include "my-jupyterhub.singleuser.resources" . }}
     
-    # Additional user configuration
-    {{- if .Values.singleuser.extraEnv }}
-    c.KubeSpawner.environment = {
-    {{- range $key, $value := .Values.singleuser.extraEnv }}
-        '{{ $key }}': '{{ $value }}',
-    {{- end }}
+    {{- include "my-jupyterhub.resourcePolicy" . }}
+    
+    {{- include "my-jupyterhub.resourceTiers" . }}
+    
+    {{- include "my-jupyterhub.resourceMonitoring" . }}
+    
+    {{- include "my-jupyterhub.nodeResourceAffinity" . }}
+    
+    {{- include "my-jupyterhub.resourceValidation" . }}
+    
+    # Security context for user pods
+    c.KubeSpawner.uid = {{ .Values.singleuser.securityContext.runAsUser }}
+    c.KubeSpawner.gid = {{ .Values.singleuser.securityContext.runAsGroup }}
+    c.KubeSpawner.fs_gid = {{ .Values.singleuser.securityContext.fsGroup }}
+    
+    # Security context configuration
+    c.KubeSpawner.privileged = False
+    c.KubeSpawner.allow_privilege_escalation = {{ .Values.singleuser.securityContext.allowPrivilegeEscalation }}
+    c.KubeSpawner.extra_pod_config = {
+        'securityContext': {
+            'runAsNonRoot': True,
+            'seccompProfile': {'type': 'RuntimeDefault'}
+        }
     }
+    
+    # Drop all capabilities for security
+    c.KubeSpawner.extra_container_config = {
+        'securityContext': {
+            'capabilities': {'drop': ['ALL']},
+            'allowPrivilegeEscalation': False,
+            'readOnlyRootFilesystem': False  # Jupyter needs write access to /tmp
+        }
+    }
+    
+    # =============================================================================
+    # STORAGE CONFIGURATION
+    # =============================================================================
+    
+    {{- if eq .Values.singleuser.storage.type "dynamic" }}
+    # Dynamic PVC creation per user
+    c.KubeSpawner.storage_pvc_ensure = True
+    c.KubeSpawner.pvc_name_template = '{{ .Values.singleuser.storage.dynamic.pvcNameTemplate }}'
+    c.KubeSpawner.volume_name_template = '{{ .Values.singleuser.storage.dynamic.volumeNameTemplate }}'
+    c.KubeSpawner.storage_capacity = '{{ .Values.singleuser.storage.capacity }}'
+    c.KubeSpawner.storage_access_modes = {{ .Values.singleuser.storage.dynamic.storageAccessModes | toJson }}
+    {{- if .Values.singleuser.storage.dynamic.storageClassName }}
+    c.KubeSpawner.storage_class = '{{ .Values.singleuser.storage.dynamic.storageClassName }}'
     {{- end }}
     
-    # Node selector for user pods
+    # Home directory mount
+    c.KubeSpawner.volumes = [
+        {
+            'name': 'volume-{username}',
+            'persistentVolumeClaim': {
+                'claimName': '{{ .Values.singleuser.storage.dynamic.pvcNameTemplate }}'
+            }
+        }
+    ]
+    c.KubeSpawner.volume_mounts = [
+        {
+            'mountPath': '{{ .Values.singleuser.storage.homeMountPath }}',
+            'name': 'volume-{username}'
+        }
+    ]
+    
+    {{- else if eq .Values.singleuser.storage.type "static" }}
+    # Static shared storage
+    c.KubeSpawner.volumes = [
+        {
+            'name': 'home-storage',
+            'persistentVolumeClaim': {
+                'claimName': '{{ .Values.singleuser.storage.static.pvcName }}'
+            }
+        }
+    ]
+    c.KubeSpawner.volume_mounts = [
+        {
+            'mountPath': '{{ .Values.singleuser.storage.homeMountPath }}',
+            'name': 'home-storage',
+            'subPath': '{{ .Values.singleuser.storage.static.subPath }}'
+        }
+    ]
+    
+    {{- else }}
+    # No persistent storage - ephemeral only
+    c.KubeSpawner.volumes = []
+    c.KubeSpawner.volume_mounts = []
+    {{- end }}
+    
+    # Extra volumes and volume mounts
+    {{- if .Values.singleuser.storage.extraVolumes }}
+    extra_volumes = {{ .Values.singleuser.storage.extraVolumes | toJson }}
+    c.KubeSpawner.volumes.extend(extra_volumes)
+    {{- end }}
+    
+    {{- if .Values.singleuser.storage.extraVolumeMounts }}
+    extra_volume_mounts = {{ .Values.singleuser.storage.extraVolumeMounts | toJson }}
+    c.KubeSpawner.volume_mounts.extend(extra_volume_mounts)
+    {{- end }}
+    
+    # =============================================================================
+    # ENVIRONMENT CONFIGURATION
+    # =============================================================================
+    
+    # Base environment variables
+    c.KubeSpawner.environment = {
+        'JUPYTER_ENABLE_LAB': 'yes',
+        'CHOWN_HOME': 'yes',
+        'CHOWN_HOME_OPTS': '-R',
+    }
+    
+    # Add custom environment variables
+    {{- if .Values.singleuser.extraEnv }}
+    custom_env = {{ .Values.singleuser.extraEnv | toJson }}
+    c.KubeSpawner.environment.update(custom_env)
+    {{- end }}
+    
+    # S3/MinIO integration
+    {{- if .Values.external.s3.enabled }}
+    c.KubeSpawner.environment.update({
+        'S3_ENDPOINT': '{{ .Values.external.s3.endpoint }}',
+        'S3_BUCKET': '{{ .Values.external.s3.bucket }}',
+        'AWS_ACCESS_KEY_ID': '{{ .Values.external.s3.accessKey }}',
+        'AWS_SECRET_ACCESS_KEY': '{{ .Values.external.s3.secretKey }}',
+        'S3_USE_HTTPS': '{{ .Values.external.s3.useSSL }}',
+        {{- if .Values.external.s3.region }}
+        'AWS_DEFAULT_REGION': '{{ .Values.external.s3.region }}',
+        {{- end }}
+    })
+    {{- end }}
+    
+    # =============================================================================
+    # NETWORKING AND SERVICE CONFIGURATION
+    # =============================================================================
+    
+    # Node selection for user pods
     {{- if .Values.singleuser.nodeSelector }}
     c.KubeSpawner.node_selector = {{ .Values.singleuser.nodeSelector | toJson }}
     {{- end }}
     
-    # Labels for user pods
+    # Pod affinity and anti-affinity rules
+    {{- if .Values.singleuser.affinity }}
+    c.KubeSpawner.extra_pod_config['affinity'] = {{ .Values.singleuser.affinity | toJson }}
+    {{- end }}
+    
+    # Tolerations for user pods
+    {{- if .Values.singleuser.tolerations }}
+    c.KubeSpawner.tolerations = {{ .Values.singleuser.tolerations | toJson }}
+    {{- end }}
+    
+    # Service account for user pods
+    {{- if .Values.singleuser.serviceAccount.create }}
+    c.KubeSpawner.service_account = '{{ .Values.singleuser.serviceAccount.name | default "default" }}'
+    {{- end }}
+    
+    # =============================================================================
+    # USER PROFILES AND RESOURCE TIERS
+    # =============================================================================
+    
+    {{- if .Values.singleuser.profileList }}
+    # Multiple resource profiles for users
+    c.KubeSpawner.profile_list = [
+    {{- range .Values.singleuser.profileList }}
+        {
+            'display_name': '{{ .display_name }}',
+            'description': '{{ .description }}',
+            'kubespawner_override': {{ .kubespawner_override | toJson }},
+            {{- if .default }}
+            'default': {{ .default }},
+            {{- end }}
+        },
+    {{- end }}
+    ]
+    {{- end }}
+    
+    # =============================================================================
+    # LABELS AND ANNOTATIONS
+    # =============================================================================
+    
+    # Common labels for user pods
     c.KubeSpawner.common_labels = {
+        # Standard Kubernetes labels
         'app.kubernetes.io/name': '{{ include "my-jupyterhub.name" . }}',
         'app.kubernetes.io/instance': '{{ .Release.Name }}',
         'app.kubernetes.io/component': 'singleuser-server',
+        'app.kubernetes.io/managed-by': 'jupyterhub',
+        'app.kubernetes.io/part-of': 'jupyterhub',
+        'app.kubernetes.io/version': '{{ .Chart.AppVersion }}',
+        
+        # JupyterHub specific labels
+        'jupyterhub.io/component-type': 'user-workload',
+        'jupyterhub.io/username': '{username}',
+        'jupyterhub.io/resource-type': 'singleuser',
+        'jupyterhub.io/owned-by': '{{ .Release.Name }}',
+        'jupyterhub.io/managed-by': 'jupyterhub-spawner',
+        'jupyterhub.io/created-by': '{{ .Chart.Name }}',
+        
+        # Network access labels for pod communication
+        'hub.jupyter.org/network-access-hub': 'true',
+        'hub.jupyter.org/network-access-proxy': 'true',
     }
     
-    # Load any additional configuration
-    if os.path.exists('/usr/local/etc/jupyterhub/config/extra_config.py'):
-        exec(open('/usr/local/etc/jupyterhub/config/extra_config.py').read())
+    # Add global common labels
+    {{- if .Values.global.commonLabels }}
+    common_labels = {{ .Values.global.commonLabels | toJson }}
+    c.KubeSpawner.common_labels.update(common_labels)
+    {{- end }}
+    
+    # Add singleuser extra labels
+    {{- if .Values.singleuser.extraLabels }}
+    singleuser_labels = {{ .Values.singleuser.extraLabels | toJson }}
+    c.KubeSpawner.common_labels.update(singleuser_labels)
+    {{- end }}
+    
+    # Add environment classification labels
+    {{- if .Values.global.environment }}
+    c.KubeSpawner.common_labels['environment'] = '{{ .Values.global.environment }}'
+    {{- end }}
+    {{- if .Values.global.team }}
+    c.KubeSpawner.common_labels['team'] = '{{ .Values.global.team }}'
+    {{- end }}
+    {{- if index .Values.global "cost-center" }}
+    c.KubeSpawner.common_labels['cost-center'] = '{{ index .Values.global "cost-center" }}'
+    {{- end }}
+    
+    # Pod annotations
+    c.KubeSpawner.extra_annotations = {
+        # Helm management
+        'meta.helm.sh/release-name': '{{ .Release.Name }}',
+        'meta.helm.sh/release-namespace': '{{ .Release.Namespace }}',
+        
+        # JupyterHub metadata
+        'jupyterhub.io/chart-version': '{{ .Chart.Version }}',
+        'jupyterhub.io/app-version': '{{ .Chart.AppVersion }}',
+        'jupyterhub.io/resource-type': 'singleuser',
+        'jupyterhub.io/username': '{username}',
+        'jupyterhub.io/spawned-by': 'kubespawner',
+        
+        # Operational metadata
+        'cluster-autoscaler.kubernetes.io/safe-to-evict': 'true',
+        
+        # Resource tracking
+        'jupyterhub.io/resource-tier': '{resource_tier}',
+        'jupyterhub.io/cpu-limit': '{cpu_limit}',
+        'jupyterhub.io/memory-limit': '{mem_limit}',
+    }
+    
+    # Add global common annotations
+    {{- if .Values.global.commonAnnotations }}
+    common_annotations = {{ .Values.global.commonAnnotations | toJson }}
+    c.KubeSpawner.extra_annotations.update(common_annotations)
+    {{- end }}
+    
+    # Add singleuser extra annotations
+    {{- if .Values.singleuser.extraAnnotations }}
+    singleuser_annotations = {{ .Values.singleuser.extraAnnotations | toJson }}
+    c.KubeSpawner.extra_annotations.update(singleuser_annotations)
+    {{- end }}
+    
+    # Security and network policy annotations
+    {{- if .Values.security.networkPolicy.enabled }}
+    c.KubeSpawner.extra_annotations.update({
+        'network-policy.kubernetes.io/ingress': 'restricted',
+        'network-policy.kubernetes.io/egress': 'restricted',
+    })
+    {{- end }}
+    
+    # Monitoring annotations
+    {{- if .Values.monitoring.prometheus.enabled }}
+    c.KubeSpawner.extra_annotations.update({
+        'prometheus.io/scrape': 'true',
+        'prometheus.io/port': '8888',
+        'prometheus.io/path': '/metrics',
+    })
+    {{- end }}
+    
+    # =============================================================================
+    # LIFECYCLE AND HEALTH CHECKS
+    # =============================================================================
+    
+    # Lifecycle hooks for user pods
+    {{- if .Values.singleuser.lifecycleHooks }}
+    c.KubeSpawner.extra_container_config['lifecycle'] = {{ .Values.singleuser.lifecycleHooks | toJson }}
+    {{- else }}
+    # Default graceful shutdown
+    c.KubeSpawner.extra_container_config['lifecycle'] = {
+        'preStop': {
+            'exec': {
+                'command': ['/bin/bash', '-c', 'jupyter notebook stop 8888 || true']
+            }
+        }
+    }
+    {{- end }}
+    
+    # Image pull secrets for private registries
+    {{- if .Values.global.imagePullSecrets }}
+    c.KubeSpawner.image_pull_secrets = {{ .Values.global.imagePullSecrets | toJson }}
+    {{- end }}
+    
+    # =============================================================================
+    # ADVANCED JUPYTERHUB CONFIGURATION
+    # =============================================================================
+    
+    # Hub application settings
+    c.JupyterHub.admin_access = {{ .Values.hub.config.JupyterHub.admin_access | default true }}
+    c.JupyterHub.allow_named_servers = {{ .Values.hub.config.JupyterHub.allow_named_servers | default false }}
+    c.JupyterHub.cleanup_servers = {{ .Values.hub.config.JupyterHub.cleanup_servers | default true }}
+    
+    # Shutdown settings
+    c.JupyterHub.shutdown_on_logout = True
+    c.JupyterHub.redirect_to_server = True
+    
+    # Activity tracking
+    c.JupyterHub.last_activity_interval = 300  # 5 minutes
+    
+    # =============================================================================
+    # CUSTOM CONFIGURATION
+    # =============================================================================
+    
+    # Load additional custom configuration
+    {{- range $key, $value := .Values.advanced.extraConfig }}
+    # {{ $key }}
+    {{ $value | nindent 4 }}
+    {{- end }}
+    
+    # Load any additional configuration files
+    import glob
+    for config_file in glob.glob('/usr/local/etc/jupyterhub/config/*.py'):
+        if config_file != __file__:
+            try:
+                exec(open(config_file).read())
+            except Exception as e:
+                print(f"Error loading custom config {config_file}: {e}")
 
   z2jh.py: |
     """
     Helper functions for zero-to-jupyterhub configuration
+    Enhanced version with better error handling and logging
     """
     import os
+    import json
+    import logging
     from ruamel.yaml import YAML
+
+    # Configure logging
+    logger = logging.getLogger('z2jh')
 
     def get_config(config_path, default=None):
         """
-        Find a config item in the chart's values.yaml or return default
+        Find a config item by path or return default
+        
+        Args:
+            config_path (str): Dot-separated path to config item
+            default: Default value if not found
+            
+        Returns:
+            Configuration value or default
         """
-        # This is a simplified stand-in. In a real z2jh, this would
-        # parse the full values.yaml. Here, we'll simulate it.
-        # For this chart, we'll just pass the full singleuser dict.
-        if config_path == 'singleuser':
-            yaml = YAML()
-            # The full values file isn't available directly in the template,
-            # so we reconstruct the relevant part from the template engine
-            singleuser_config_str = '''
-            {{- toYaml .Values.singleuser | nindent 12 }}
-            '''
-            return yaml.load(singleuser_config_str)
-
-        env_name = config_path.replace('.', '_').upper()
-        return os.environ.get(env_name, default)
+        try:
+            # Convert dot notation to environment variable
+            env_name = config_path.replace('.', '_').upper()
+            env_value = os.environ.get(env_name)
+            
+            if env_value is not None:
+                # Try to parse as JSON first (for complex types)
+                try:
+                    return json.loads(env_value)
+                except (json.JSONDecodeError, ValueError):
+                    # Return as string if not valid JSON
+                    return env_value
+            
+            # Special handling for common config paths
+            if config_path == 'hub.db.password':
+                return os.environ.get('JPY_HUB_DB_PASSWORD', default)
+            elif config_path == 'proxy.secretToken':
+                return os.environ.get('CONFIGPROXY_AUTH_TOKEN', default)
+            
+            logger.debug(f"Config path '{config_path}' not found, using default: {default}")
+            return default
+            
+        except Exception as e:
+            logger.error(f"Error getting config '{config_path}': {e}")
+            return default
     
     def set_config_if_not_none(cparent, name, config_path, default=None):
         """
         Set a config item if it's not None
+        
+        Args:
+            cparent: Parent configuration object
+            name (str): Attribute name to set
+            config_path (str): Path to get value from
+            default: Default value
         """
-        value = get_config(config_path, default)
-        if value is not None:
-            setattr(cparent, name, value)
+        try:
+            value = get_config(config_path, default)
+            if value is not None:
+                setattr(cparent, name, value)
+                logger.debug(f"Set {name} = {value}")
+            else:
+                logger.debug(f"Skipping {name} (value is None)")
+        except Exception as e:
+            logger.error(f"Error setting config '{name}': {e}")
+    
+    def get_name_env(name, default=None):
+        """
+        Get environment variable by name
+        
+        Args:
+            name (str): Environment variable name
+            default: Default value
+            
+        Returns:
+            Environment variable value or default
+        """
+        return os.environ.get(name, default)
+    
+    def get_secret_value(secret_path, default=None):
+        """
+        Read a secret from mounted secret volume
+        
+        Args:
+            secret_path (str): Path to secret file
+            default: Default value
+            
+        Returns:
+            Secret value or default
+        """
+        try:
+            if os.path.exists(secret_path):
+                with open(secret_path, 'r') as f:
+                    return f.read().strip()
+            else:
+                logger.warning(f"Secret file not found: {secret_path}")
+                return default
+        except Exception as e:
+            logger.error(f"Error reading secret '{secret_path}': {e}")
+            return default

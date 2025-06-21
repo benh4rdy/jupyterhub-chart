@@ -5,12 +5,14 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
+    {{- include "my-jupyterhub.owner.labels" . | nindent 4 }}
+    {{- include "my-jupyterhub.environment.labels" . | nindent 4 }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- include "my-jupyterhub.hub.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.deployment.annotations" . | nindent 4 }}
+    {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.hub.replicas }}
+  replicas: {{ .Values.hub.replicas | default 1 }}
   strategy:
     type: Recreate
   selector:
@@ -20,29 +22,43 @@ spec:
     metadata:
       labels:
         {{- include "my-jupyterhub.hub.labels" . | nindent 8 }}
-        # Network access labels for JupyterHub
+        {{- include "my-jupyterhub.owner.labels" . | nindent 8 }}
+        {{- include "my-jupyterhub.environment.labels" . | nindent 8 }}
+        # Network access labels for JupyterHub pod communication
         hub.jupyter.org/network-access-proxy-api: "true"
         hub.jupyter.org/network-access-proxy-http: "true"
         hub.jupyter.org/network-access-singleuser: "true"
       annotations:
+        {{- include "my-jupyterhub.hub.annotations" . | nindent 8 }}
+        {{- include "my-jupyterhub.pod.annotations" . | nindent 8 }}
+        {{- include "my-jupyterhub.lifecycle.annotations" . | nindent 8 }}
         # Force pod restart when config changes
         checksum/config-map: {{ include (print $.Template.BasePath "/hub-configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/hub-secret.yaml") . | sha256sum }}
-        {{- with .Values.commonAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
     spec:
       serviceAccountName: {{ include "my-jupyterhub.hub.serviceAccountName" . }}
+      
+      # Security context for the pod
       securityContext:
-        {{- toYaml .Values.securityContext | nindent 8 }}
+        {{- toYaml .Values.security.podSecurityContext | nindent 8 }}
+      
+      # Image pull secrets for private registries
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # Node selection and scheduling
       {{- with .Values.hub.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      
       {{- with .Values.hub.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- else }}
+      # Default affinity: prefer core nodes
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -54,10 +70,12 @@ spec:
                 values:
                 - core
       {{- end }}
+      
       {{- with .Values.hub.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- else }}
+      # Default tolerations for dedicated core nodes
       tolerations:
       - key: hub.jupyter.org/dedicated
         operator: Equal
@@ -68,19 +86,36 @@ spec:
         value: core
         effect: NoSchedule
       {{- end }}
+
+      # Init containers for setup tasks
+      {{- if .Values.advanced.initContainers }}
+      initContainers:
+        {{- toYaml .Values.advanced.initContainers | nindent 8 }}
+      {{- end }}
+
       containers:
+      # Main JupyterHub container
       - name: hub
         image: "{{ .Values.hub.image.repository }}:{{ .Values.hub.image.tag }}"
         imagePullPolicy: {{ .Values.hub.image.pullPolicy }}
+        
+        # Command and arguments
         args:
           - jupyterhub
           - --config
           - /usr/local/etc/jupyterhub/jupyterhub_config.py
           - --upgrade-db
+          {{- if .Values.development.debug }}
+          - --debug
+          {{- end }}
+        
+        # Container ports
         ports:
         - name: http
           containerPort: 8081
           protocol: TCP
+
+        # Environment variables
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
@@ -90,69 +125,213 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: JUPYTERHUB_COOKIE_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: hub-secret
-              key: cookie.secret
         - name: CONFIGPROXY_AUTH_TOKEN
           valueFrom:
             secretKeyRef:
-              name: hub-secret
+              name: {{ include "my-jupyterhub.hub.fullname" . }}-secret
               key: proxy.token
+        {{- if or (eq .Values.hub.db.type "mysql") (eq .Values.hub.db.type "postgresql") }}
+        - name: JPY_HUB_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "my-jupyterhub.hub.fullname" . }}-secret
+              key: db.password
+        {{- end }}
+        {{- if eq .Values.auth.type "ldap" }}
+        # LDAP configuration environment variables
+        - name: LDAP_SERVER_ADDRESS
+          value: {{ .Values.auth.ldap.server.address | quote }}
+        - name: LDAP_USE_SSL
+          value: {{ .Values.auth.ldap.server.use_ssl | quote }}
+        {{- if .Values.auth.ldap.server.ca_certs }}
+        - name: LDAP_CA_CERTS
+          value: /usr/local/etc/jupyterhub/ldap-ca/ca.crt
+        {{- end }}
+        {{- end }}
+        {{- with .Values.hub.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+
+        # Resource specifications
+        {{- include "my-jupyterhub.hub.resources" . | nindent 10 }}
+
+        # Health checks
+        {{- if .Values.hub.livenessProbe.enabled }}
         livenessProbe:
           httpGet:
             path: /hub/health
             port: http
             scheme: HTTP
-          initialDelaySeconds: 300
-          periodSeconds: 10
-          failureThreshold: 30
-          timeoutSeconds: 3
+          initialDelaySeconds: {{ .Values.hub.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.hub.livenessProbe.periodSeconds }}
+          failureThreshold: {{ .Values.hub.livenessProbe.failureThreshold }}
+          timeoutSeconds: {{ .Values.hub.livenessProbe.timeoutSeconds }}
+        {{- end }}
+        
+        {{- if .Values.hub.readinessProbe.enabled }}
         readinessProbe:
           httpGet:
             path: /hub/health
             port: http
             scheme: HTTP
-          periodSeconds: 2
-          failureThreshold: 1000
-          timeoutSeconds: 1
+          periodSeconds: {{ .Values.hub.readinessProbe.periodSeconds }}
+          failureThreshold: {{ .Values.hub.readinessProbe.failureThreshold }}
+          timeoutSeconds: {{ .Values.hub.readinessProbe.timeoutSeconds }}
+        {{- end }}
+
+        # Security context for container
         securityContext:
-          runAsUser: 1000
-          runAsGroup: 1000
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-            - ALL
-        resources:
-          {{- toYaml .Values.hub.resources | nindent 10 }}
+          {{- toYaml .Values.security.containerSecurityContext | nindent 10 }}
+
+        # Lifecycle hooks for graceful shutdown
+        {{- if .Values.hub.lifecycleHooks }}
+        lifecycle:
+          {{- toYaml .Values.hub.lifecycleHooks | nindent 10 }}
+        {{- else }}
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  # Graceful shutdown: stop accepting new requests and finish existing ones
+                  echo "Initiating graceful shutdown..."
+                  # Send SIGTERM to JupyterHub process
+                  kill -TERM 1
+                  # Wait up to 30 seconds for graceful shutdown
+                  sleep 30
+        {{- end }}
+
+        # Volume mounts
         volumeMounts:
+        # Configuration files
         - name: config
           mountPath: /usr/local/etc/jupyterhub/jupyterhub_config.py
           subPath: jupyterhub_config.py
+          readOnly: true
         - name: config
           mountPath: /usr/local/etc/jupyterhub/z2jh.py
           subPath: z2jh.py
+          readOnly: true
         - name: config
           mountPath: /usr/local/etc/jupyterhub/config/
+          readOnly: true
+        
+        # Secrets
         - name: secret
           mountPath: /usr/local/etc/jupyterhub/secret/
+          readOnly: true
+        
+        # Database persistence
+        {{- if eq .Values.hub.db.type "sqlite-pvc" }}
         - name: hub-db-dir
           mountPath: /srv/jupyterhub
+        {{- end }}
+        
+        # HTTPS certificates
+        {{- if and .Values.proxy.https.enabled (eq .Values.proxy.https.type "secret") }}
+        - name: https-certs
+          mountPath: /usr/local/etc/jupyterhub/ssl/
+          readOnly: true
+        {{- end }}
+        
+        # LDAP CA certificates
+        {{- if and (eq .Values.auth.type "ldap") .Values.auth.ldap.server.ca_certs }}
+        - name: ldap-ca-certs
+          mountPath: /usr/local/etc/jupyterhub/ldap-ca/
+          readOnly: true
+        {{- end }}
+        
+        # S3/MinIO CA certificates
+        {{- if and .Values.external.s3.enabled .Values.external.s3.caCert }}
+        - name: s3-ca-certs
+          mountPath: /usr/local/etc/jupyterhub/s3-ca/
+          readOnly: true
+        {{- end }}
+        
+        # Extra volume mounts
+        {{- with .Values.hub.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+
+      # Sidecar containers
+      {{- if .Values.advanced.sidecarContainers }}
+      {{- toYaml .Values.advanced.sidecarContainers | nindent 6 }}
+      {{- end }}
+
+      # Pod volumes
       volumes:
-      - name: hub-db-dir
-        persistentVolumeClaim:
-          claimName: {{ include "my-jupyterhub.hub.fullname" . }}-db-dir
+      # Configuration ConfigMap
       - name: config
         configMap:
           name: {{ include "my-jupyterhub.hub.fullname" . }}
+          defaultMode: 0444
+      
+      # Secrets
       - name: secret
         secret:
-          secretName: hub-secret
-      {{- if .Values.hub.extraVolumes }}
-      {{- .Values.hub.extraVolumes | toYaml | nindent 6 }}
+          secretName: {{ include "my-jupyterhub.hub.fullname" . }}-secret
+          defaultMode: 0400
+
+      # Database persistence
+      {{- if eq .Values.hub.db.type "sqlite-pvc" }}
+      - name: hub-db-dir
+        persistentVolumeClaim:
+          claimName: {{ include "my-jupyterhub.hub.fullname" . }}-db-dir
       {{- end }}
-      {{- with .Values.global.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
+
+      # HTTPS certificates
+      {{- if and .Values.proxy.https.enabled (eq .Values.proxy.https.type "secret") }}
+      - name: https-certs
+        secret:
+          secretName: {{ .Values.proxy.https.secret.name }}
+          defaultMode: 0444
+          items:
+          - key: {{ .Values.proxy.https.secret.crt }}
+            path: tls.crt
+          - key: {{ .Values.proxy.https.secret.key }}
+            path: tls.key
+      {{- end }}
+
+      # LDAP CA certificates
+      {{- if and (eq .Values.auth.type "ldap") .Values.auth.ldap.server.ca_certs }}
+      - name: ldap-ca-certs
+        secret:
+          secretName: {{ .Values.auth.ldap.server.ca_certs }}
+          defaultMode: 0444
+          items:
+          - key: ca.crt
+            path: ca.crt
+      {{- end }}
+
+      # S3/MinIO CA certificates  
+      {{- if and .Values.external.s3.enabled .Values.external.s3.caCert }}
+      - name: s3-ca-certs
+        secret:
+          secretName: {{ .Values.external.s3.caCert }}
+          defaultMode: 0444
+          items:
+          - key: ca.crt
+            path: ca.crt
+      {{- end }}
+
+      # Extra volumes
+      {{- with .Values.hub.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+
+      # Restart policy and termination
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+
+      # DNS configuration
+      dnsPolicy: ClusterFirst
+
+      # Scheduler configuration
+      schedulerName: default-scheduler
+
+      # Priority class for critical workloads
+      {{- if .Values.hub.priorityClassName }}
+      priorityClassName: {{ .Values.hub.priorityClassName }}
       {{- end }}

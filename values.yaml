@@ -1,84 +1,826 @@
-# Hub configuration
+# =============================================================================
+# JupyterHub Helm Chart Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global Configuration
+# -----------------------------------------------------------------------------
+global:
+  # Image pull secrets for private registries
+  # Option 1: Create secrets automatically from credentials
+  imagePullSecrets: []
+    # - name: docker-hub-secret
+    #   registry: https://index.docker.io/v1/
+    #   username: myuser
+    #   password: mypassword
+    #   email: user@example.com
+    # - name: private-registry-secret
+    #   registry: https://registry.company.com
+    #   username: serviceaccount
+    #   password: secrettoken
+    #   email: noreply@company.com
+    # - name: quay-secret
+    #   registry: https://quay.io
+    #   username: myuser+robot
+    #   password: robottoken
+    #   email: user@example.com
+
+  # Option 2: Reference pre-existing secrets (created manually)
+  existingImagePullSecrets: []
+    # - name: existing-registry-secret
+    # - name: another-existing-secret
+
+  # Common labels applied to all resources
+  commonLabels: {}
+    # environment: production
+    # team: data-science
+    # cost-center: "12345"
+
+  # Common annotations applied to all resources  
+  commonAnnotations: {}
+    # managed-by: helm
+    # contact: admin@company.com
+    # documentation: https://wiki.company.com/jupyterhub
+
+  # Environment classification
+  environment: ""  # development, staging, production
+  team: ""         # Team or department owning this deployment
+  cost-center: ""  # Cost center for billing and chargeback
+
+# -----------------------------------------------------------------------------
+# Hub Configuration
+# -----------------------------------------------------------------------------
 hub:
+  # Hub container image configuration
   image:
-    repository: jupyterhub/k8s-hub
-    tag: "3.0.0"
+    repository: quay.io/jupyterhub/k8s-hub
+    tag: "4.2.0"
     pullPolicy: IfNotPresent
-  config:
-    JupyterHub:
-      authenticator_class: 'jupyterhub.auth.DummyAuthenticator'
-      spawner_class: 'kubespawner.KubeSpawner'
-    DummyAuthenticator:
-      password: 'test'
-    Authenticator:
-      admin_users:
-        - admin
+
+  # Number of hub replicas (should be 1 for SQLite, can be >1 for external DB)
+  replicas: 1
+
+  # Resource specifications
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
   
+  # Resource constraints and QoS settings
+  resourcePolicy:
+    # Quality of Service class: Guaranteed, Burstable, or BestEffort
+    qosClass: "Burstable"  # Set to "Guaranteed" for production critical workloads
+    
+    # Enforce resource limits strictly
+    enforceResourceLimits: true
+    
+    # Allow resource overcommit for development
+    allowOvercommit: false
+
+  # Node selection and scheduling
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Service account configuration
   serviceAccount:
     create: true
-    name: my-custom-hub-my-jupyterhub-hub
+    name: ""
+    annotations: {}
 
+  # Hub service configuration
+  service:
+    type: ClusterIP
+    clusterIP: ""  # Set to specific IP if needed
+    annotations: {}
+    sessionAffinity: None  # None, ClientIP
+    sessionAffinityConfig: {}
+    extraPorts: []
+    
+    # Headless service for StatefulSet support
+    headless:
+      enabled: false
+
+  # Database configuration
   db:
-    type: sqlite-pvc
+    type: sqlite-pvc  # Options: sqlite-pvc, mysql, postgresql
+    url: ""  # Required for mysql/postgresql
+    password: ""  # Required for mysql/postgresql
     pvc:
       accessModes:
         - ReadWriteOnce
       storageClassName: ""
-      size: 1Gi
+      size: 10Gi
+      annotations: {}
 
-# Proxy configuration  
+  # JupyterHub application configuration
+  config:
+    JupyterHub:
+      # Authentication class - will be overridden based on auth.type
+      authenticator_class: "jupyterhub.auth.DummyAuthenticator"
+      spawner_class: "kubespawner.KubeSpawner"
+      # Admin users (usernames)
+      admin_users: []
+      # Automatically start server for admin users
+      admin_access: true
+      # Allow any authenticated user to start their server
+      allow_named_servers: false
+      # Cleanup servers on hub shutdown
+      cleanup_servers: true
+
+    # Authenticator-specific configuration
+    Authenticator:
+      admin_users: []
+      allowed_users: []
+      blocked_users: []
+      auto_login: false
+
+    # Dummy authenticator (for development)
+    DummyAuthenticator:
+      password: "test"
+
+    # LDAP authenticator configuration (will be configured based on auth.ldap settings)
+    LDAPAuthenticator:
+      server_address: ""
+      bind_dn_template: []
+      user_search_base: ""
+      user_attribute: "sAMAccountName"
+      lookup_dn: false
+      use_ssl: false
+      allowed_groups: []
+      valid_username_regex: "^[a-zA-Z][a-zA-Z0-9_.-]*[a-zA-Z0-9]$"
+
+  # Extra volumes for the hub pod
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  # Extra environment variables
+  extraEnv: []
+
+  # Extra labels specific to hub resources
+  extraLabels: {}
+    # hub.jupyter.org/tier: critical
+    # monitoring.company.com/alert-level: high
+
+  # Extra annotations specific to hub resources
+  extraAnnotations: {}
+    # backup.company.com/schedule: "0 2 * * *"
+    # security.company.com/scan-level: strict
+
+  # Liveness and readiness probes
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 300
+    periodSeconds: 10
+    failureThreshold: 30
+    timeoutSeconds: 3
+
+  readinessProbe:
+    enabled: true
+    periodSeconds: 2
+    failureThreshold: 1000
+    timeoutSeconds: 1
+
+# -----------------------------------------------------------------------------
+# Authentication Configuration
+# -----------------------------------------------------------------------------
+auth:
+  # Authentication type: dummy, ldap, oauth, custom
+  type: dummy
+
+  # LDAP/Active Directory authentication
+  ldap:
+    # LDAP server configuration
+    server:
+      address: ""  # e.g., "ldaps://ad.company.com:636"
+      use_ssl: true
+      ca_certs: ""  # Path to CA certificate file
+      
+    # User authentication
+    bind_dn_template:
+      - "CN={username},OU=Users,DC=company,DC=com"
+      - "{username}@company.com"
+    
+    # User search configuration
+    user_search_base: "OU=Users,DC=company,DC=com"
+    user_attribute: "sAMAccountName"
+    lookup_dn: false
+    
+    # Group-based access control
+    allowed_groups: []
+      # - "CN=JupyterHub Users,OU=Groups,DC=company,DC=com"
+    
+    # Admin user groups
+    admin_groups: []
+      # - "CN=JupyterHub Admins,OU=Groups,DC=company,DC=com"
+
+  # OAuth configuration (GitHub, Google, etc.)
+  oauth:
+    provider: ""  # github, google, generic
+    client_id: ""
+    client_secret: ""
+    oauth_callback_url: ""
+    
+# -----------------------------------------------------------------------------
+# Proxy Configuration
+# -----------------------------------------------------------------------------
 proxy:
-  service:
-    type: ClusterIP
-    port: 80
+  # Configurable HTTP Proxy image
   chp:
     image:
-      repository: jupyterhub/configurable-http-proxy
-      tag: "4.5.2"
+      repository: quay.io/jupyterhub/configurable-http-proxy
+      tag: "4.5.4"
       pullPolicy: IfNotPresent
+    
+    # Resource specifications for proxy
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+    
+    # Resource policy for proxy
+    resourcePolicy:
+      qosClass: "Burstable"
+      enforceResourceLimits: true
+
+    # Extra environment variables
+    extraEnv: []
+
+    # Extra command line arguments
+    extraCommandLineFlags: []
+
+    # Extra ports to expose
+    extraPorts: []
+
+    # Extra labels specific to proxy resources
+    extraLabels: {}
+      # proxy.jupyter.org/tier: gateway
+      # networking.company.com/zone: public
+
+    # Extra annotations specific to proxy resources  
+    extraAnnotations: {}
+      # loadbalancer.company.com/algorithm: round-robin
+      # networking.company.com/timeout: "30s"
+
+    # Liveness and readiness probes
+    livenessProbe:
+      enabled: true
+      initialDelaySeconds: 60
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+
+    readinessProbe:
+      enabled: true
+      initialDelaySeconds: 0
+      periodSeconds: 2
+      failureThreshold: 3
+      timeoutSeconds: 1
+
+  # Service configuration
+  service:
+    type: ClusterIP  # Options: ClusterIP, LoadBalancer, NodePort, ExternalName
+    port: 80
+    targetPort: http
+    
+    # LoadBalancer specific configuration
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+      # - "10.0.0.0/8"
+      # - "192.168.0.0/16"
+    
+    # NodePort specific configuration
+    nodePort: ""  # Auto-assign if empty
+    httpsPort: 443
+    httpsNodePort: ""
+    
+    # ExternalName specific configuration
+    externalName: ""
+    
+    # Additional service configuration
+    clusterIP: ""  # Set to specific IP if needed
+    externalIPs: []
+    sessionAffinity: None  # None, ClientIP
+    sessionAffinityConfig: {}
+    
+    # Custom annotations for load balancer, ingress controller, etc.
+    annotations: {}
+      # service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      # service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      # cloud.google.com/load-balancer-type: Internal
+    
+    # Extra ports for custom protocols or services
+    extraPorts: []
+      # - name: grpc
+      #   port: 9000
+      #   targetPort: 9000
+      #   protocol: TCP
+
+  # Proxy API service (internal)
+  api:
+    service:
+      type: ClusterIP
+      clusterIP: ""
+      annotations: {}
+      extraPorts: []
+
+  # HTTPS configuration for on-premise corporate environments
   https:
     enabled: false
+    type: "secret"  # Options: secret, self-signed (letsencrypt not applicable for closed environments)
+    
+    # Hostnames for SSL certificate (internal corporate domains)
+    hosts:
+      - jupyter.internal.company.com
+      - notebooks.company.local
+    
+    # Redirect HTTP to HTTPS
+    redirect: true
+    
+    # External certificate secret (corporate PKI)
+    secret:
+      name: ""  # Auto-generated if empty
+      crt: ""   # Base64 encoded certificate or path reference
+      key: ""   # Base64 encoded private key or path reference
+    
+    # Corporate certificate authority configuration
+    corporateCA:
+      enabled: false
+      certificates: {}
+        # root-ca: |
+        #   -----BEGIN CERTIFICATE-----
+        #   MIIDXTCCAkWgAwIBAgIJAKL0UG+0nZKzMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
+        #   BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX
+        #   ...
+        #   -----END CERTIFICATE-----
+        # intermediate-ca: |
+        #   -----BEGIN CERTIFICATE-----
+        #   MIIDXTCCAkWgAwIBAgIJAKL0UG+0nZKzMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
+        #   ...
+        #   -----END CERTIFICATE-----
+    
+    # Corporate certificate metadata
+    corporate:
+      ca: "Internal Corporate CA"
+      contact: "security@company.com"
+      renewalProcess: "Contact IT Security for certificate renewal"
+    
+    # Intermediate certificate chain support
+    intermediate:
+      enabled: false
+      fullChain: ""    # Full chain: server + intermediate + root
+      chain: ""        # Intermediate certificates only
+      rootCA: ""       # Root CA certificate
+    
+    # Wildcard certificate support for subdomains
+    wildcard:
+      enabled: false
+      cert: ""         # Wildcard certificate (*.company.com)
+      key: ""          # Wildcard private key
+      domains:
+        - "*.jupyter.company.com"
+        - "*.notebooks.company.com"
+    
+    # Client certificate authentication (mutual TLS)
+    clientAuth:
+      enabled: false
+      mode: "verify_if_given"  # Options: require, request, verify_if_given
+      caCert: ""       # Client CA certificate for verification
+      crl: ""          # Certificate Revocation List (optional)
+    
+    # Self-signed certificate configuration (for development/testing)
+    selfSigned:
+      enabled: false
+      commonName: "jupyter.company.local"
+      caCommonName: "JupyterHub Internal CA"
+      validityDays: 365
+      
+      # Subject Alternative Names for internal access
+      altNames:
+        - localhost
+        - jupyter.local
+        - jupyter.internal
+        - "*.jupyter.company.local"
+      
+      # Organization details
+      organization: "Data Science Team"
+      organizationalUnit: "IT Department"
+      country: "US"
+      state: "CA"
+      locality: "Corporate HQ"
+    
+    # Certificate management and monitoring
+    management:
+      autoUpdate:
+        enabled: false
+        schedule: "0 2 * * 0"  # Weekly check on Sunday at 2 AM
+        warningDays: 30        # Alert when cert expires in X days
+        webhook: ""            # Webhook URL for notifications
+        email: ""              # Email for expiry notifications
 
-# Single-user server configuration
+  # Ingress configuration
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+      # kubernetes.io/ingress.class: nginx
+      # cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: jupyter.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+      # - secretName: jupyterhub-tls
+      #   hosts:
+      #     - jupyter.example.com
+
+  # Secret token for proxy-hub communication
+  secretToken: ""  # Will be auto-generated if empty
+
+# -----------------------------------------------------------------------------
+# Single-user Server Configuration  
+# -----------------------------------------------------------------------------
 singleuser:
-  podNameTemplate: 'jupyter-{username}'
+  # Default notebook image
   image:
-    repository: jupyter/minimal-notebook
-    tag: "latest"
+    repository: quay.io/jupyter/minimal-notebook
+    tag: "python-3.11"  # Use specific tag instead of latest
     pullPolicy: IfNotPresent
-  
+
+  # Pod naming template
+  podNameTemplate: "jupyter-{username}"
+
+  # Default URL for users (lab, tree, or custom)
   defaultUrl: "/lab"
-  
+
+  # Resource limits and requests
   cpu:
-    limit: 1
+    limit: 2
     guarantee: 0.1
   
   memory:
-    limit: "1G"
-    guarantee: "256M"
+    limit: "4G"
+    guarantee: "512M"
   
-  storage:
-    type: none  # Start without persistent storage to eliminate PVC issues
-    # Uncomment below when ready for persistent storage:
-    # type: dynamic
-    # capacity: 5Gi
-    # dynamic:
-    #   storageClass: ""
-    #   pvcNameTemplate: claim-{username}
-    #   volumeNameTemplate: volume-{username}
-    #   storageAccessModes:
-    #     - ReadWriteOnce
-  
-  startTimeout: 600  # Increased timeout for slower environments
+  # Advanced resource management
+  resources:
+    # Base resource configuration
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+    
+    # Extended resource support (GPUs, etc.)
+    extended: {}
+      # nvidia.com/gpu: 1
+      # intel.com/gpu: 1
+      # amd.com/gpu: 1
+    
+    # Resource policy configuration
+    policy:
+      qosClass: "Burstable"  # Guaranteed, Burstable, BestEffort
+      enforceResourceLimits: true
+      allowResourceOvercommit: false
+      
+      # Resource tiers for different user types
+      tiers:
+        # Small tier for basic users
+        small:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        
+        # Medium tier for standard data science work
+        medium:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+        
+        # Large tier for intensive computation
+        large:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "4000m"
+            memory: "8Gi"
+        
+        # GPU tier for machine learning
+        gpu:
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+          limits:
+            cpu: "8000m"
+            memory: "16Gi"
+          extended:
+            nvidia.com/gpu: 1
+        
+        # XLarge tier for big data processing
+        xlarge:
+          requests:
+            cpu: "2000m"
+            memory: "4Gi"
+          limits:
+            cpu: "16000m"
+            memory: "32Gi"
 
-# RBAC
+  # Storage configuration
+  storage:
+    type: dynamic  # Options: none, static, dynamic
+    capacity: 10Gi
+    
+    # Dynamic storage (PVC per user)
+    dynamic:
+      storageClassName: ""
+      pvcNameTemplate: "claim-{username}"
+      volumeNameTemplate: "volume-{username}"
+      storageAccessModes:
+        - ReadWriteOnce
+
+    # Static storage (shared NFS/etc)
+    static:
+      pvcName: ""
+      subPath: "{username}"
+
+    # Home directory mount point
+    homeMountPath: /home/jovyan
+
+    # Extra volumes and volume mounts
+    extraVolumes: []
+    extraVolumeMounts: []
+
+  # Network configuration
+  networkPolicy:
+    enabled: false
+    ingress: []
+    egress: []
+
+  # Security context
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  # Container lifecycle
+  startTimeout: 600
+  lifecycleHooks: {}
+
+  # Node selection and scheduling
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
+  # Service account
+  serviceAccount:
+    create: false
+    name: ""
+
+  # Extra environment variables
+  extraEnv: {}
+    # JUPYTER_ENABLE_LAB: "yes"
+    # GRANT_SUDO: "yes"
+
+  # Extra labels specific to singleuser resources
+  extraLabels: {}
+    # user.jupyter.org/tier: standard
+    # workload.company.com/type: interactive
+
+  # Extra annotations specific to singleuser resources
+  extraAnnotations: {}
+    # autoscaling.company.com/target-utilization: "80"
+    # backup.company.com/user-data: "enabled"
+
+  # Container resource profiles
+  profileList: []
+    # Example profiles using resource tiers:
+    # - display_name: "Small Environment (0.5 CPU, 1 GB RAM)"
+    #   description: "Lightweight environment for basic analysis and learning"
+    #   default: true
+    #   kubespawner_override:
+    #     cpu_limit: 0.5
+    #     cpu_guarantee: 0.1
+    #     mem_limit: "1G"
+    #     mem_guarantee: "256M"
+    #     image: "quay.io/jupyter/minimal-notebook:python-3.11"
+    #     
+    # - display_name: "Standard Environment (2 CPU, 4 GB RAM)"
+    #   description: "Standard environment for data science workflows"
+    #   kubespawner_override:
+    #     cpu_limit: 2
+    #     cpu_guarantee: 0.2
+    #     mem_limit: "4G"
+    #     mem_guarantee: "512M"
+    #     image: "quay.io/jupyter/datascience-notebook:python-3.11"
+    #     
+    # - display_name: "Large Environment (4 CPU, 8 GB RAM)"
+    #   description: "High-performance environment for intensive computation"
+    #   kubespawner_override:
+    #     cpu_limit: 4
+    #     cpu_guarantee: 0.5
+    #     mem_limit: "8G"
+    #     mem_guarantee: "1G"
+    #     image: "quay.io/jupyter/datascience-notebook:python-3.11"
+    #     
+    # - display_name: "GPU Environment (8 CPU, 16 GB RAM, 1 GPU)"
+    #   description: "GPU-accelerated environment for machine learning"
+    #   kubespawner_override:
+    #     cpu_limit: 8
+    #     cpu_guarantee: 1
+    #     mem_limit: "16G"
+    #     mem_guarantee: "2G"
+    #     image: "quay.io/jupyter/tensorflow-notebook:python-3.11"
+    #     extra_resource_limits:
+    #       nvidia.com/gpu: 1
+    #     extra_resource_guarantees:
+    #       nvidia.com/gpu: 1
+    #     environment:
+    #       NVIDIA_VISIBLE_DEVICES: all
+    #       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    #     node_selector:
+    #       accelerator: nvidia-tesla-v100
+
+# -----------------------------------------------------------------------------
+# RBAC Configuration
+# -----------------------------------------------------------------------------
 rbac:
   create: true
+  
+  # Service account configuration
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
 
-# Security context
-securityContext:
-  fsGroup: 1000
+# -----------------------------------------------------------------------------
+# Security Configuration
+# -----------------------------------------------------------------------------
+security:
+  # Pod security context (applied to all pods)
+  podSecurityContext:
+    fsGroup: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
 
-# Global values
-global:
-  imagePullSecrets: []
+  # Container security context
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+
+  # Network policies
+  networkPolicy:
+    enabled: false
+    ingress: []
+    egress: []
+
+# -----------------------------------------------------------------------------
+# Monitoring and Observability
+# -----------------------------------------------------------------------------
+monitoring:
+  # Prometheus metrics
+  prometheus:
+    enabled: false
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+      namespace: ""
+      labels: {}
+    
+  # Grafana dashboard
+  grafana:
+    enabled: false
+    dashboardsConfigMap: ""
+
+# -----------------------------------------------------------------------------
+# Persistence Configuration  
+# -----------------------------------------------------------------------------
+persistence:
+  # Default storage class for all PVCs
+  storageClass: ""
+  
+  # Hub database persistence
+  hub:
+    enabled: true
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+  # User home directories
+  users:
+    enabled: true
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+# -----------------------------------------------------------------------------
+# External Services Integration
+# -----------------------------------------------------------------------------
+external:
+  # S3/MinIO configuration
+  s3:
+    enabled: false
+    endpoint: ""
+    accessKey: ""
+    secretKey: ""
+    bucket: ""
+    region: ""
+    # Use HTTPS for S3 connections
+    useSSL: true
+    # Custom CA certificate for MinIO
+    caCert: ""
+
+  # External database
+  database:
+    enabled: false  # Enable for external database instead of SQLite
+    type: ""  # postgresql, mysql
+    host: ""
+    port: 5432
+    database: "jupyterhub"
+    username: ""
+    password: ""
+    sslMode: "require"
+
+# -----------------------------------------------------------------------------
+# Development and Testing
+# -----------------------------------------------------------------------------
+development:
+  # Enable debug mode
+  debug: false
+  
+  # Debug service configuration
+  debugNodePort: 30678
+  
+  # Dummy authentication for testing
+  dummyAuth:
+    enabled: false
+    password: "test"
+
+# -----------------------------------------------------------------------------
+# Advanced Configuration
+# -----------------------------------------------------------------------------
+advanced:
+  # Custom configuration snippets
+  extraConfig: {}
+    # custom-config: |
+    #   # Custom JupyterHub configuration
+    #   c.Spawner.default_url = '/lab'
+
+  # Additional Docker images to pull
+  extraImages: []
+
+  # Custom init containers
+  initContainers: []
+
+  # Custom sidecar containers  
+  sidecarContainers: []
+
+# -----------------------------------------------------------------------------
+# Deprecated/Legacy Settings (for backwards compatibility)
+# -----------------------------------------------------------------------------
+# These settings are maintained for backwards compatibility
+# Use the structured settings above for new deployments
+deprecated:
+  # Legacy hub settings
+  hub: {}
+  # Legacy proxy settings  
+  proxy: {}
+  # Legacy auth settings
+  auth: {}

@@ -1,16 +1,44 @@
 apiVersion: v2
 name: my-jupyterhub
-description: A custom Helm chart for JupyterHub on Kubernetes
+description: A production-ready Helm chart for JupyterHub on Kubernetes with LDAP authentication, HTTPS, and persistent storage
 type: application
-version: 0.1.0
-appVersion: "5.3.0"
+version: 0.2.0
+appVersion: "4.2.0"
+
 maintainers:
-  - name: Ben
+  - name: Ben Hardy
     email: benh4rdy@mail.com
+    url: https://github.com/benh4rdy
+
 keywords:
   - jupyter
   - jupyterhub
   - kubernetes
+  - data-science
+  - notebooks
+  - ldap
+  - authentication
+
 home: https://jupyter.org/hub
 sources:
-  - https://github.com/benh4rdy/my-jupyterhub-chart
+  - https://github.com/benh4rdy/jupyterhub-chart
+
+# Dependencies for JupyterHub ecosystem
+dependencies: []
+
+# Annotations for better discoverability
+annotations:
+  category: Analytics
+  licenses: Apache-2.0
+  images: |
+    - name: jupyterhub
+      image: quay.io/jupyterhub/k8s-hub:4.2.0
+    - name: configurable-http-proxy
+      image: quay.io/jupyterhub/configurable-http-proxy:4.5.4
+    - name: jupyter-notebook
+      image: quay.io/jupyter/minimal-notebook:latest
+
+# Minimum Kubernetes version required
+kubeVersion: ">=1.19.0-0"
+
+icon: https://jupyter.org/assets/logos/rectanglelogo-greytext-orangebody-greymoons.svg

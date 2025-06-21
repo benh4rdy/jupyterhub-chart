@@ -1,0 +1,436 @@
+# =============================================================================
+# JupyterHub Configuration for Corporate On-Premise Environment
+# Optimized for closed environments serving data science teams
+# =============================================================================
+
+global:
+  environment: production
+  team: data-science
+  cost-center: "DS-2024"
+  
+  commonLabels:
+    environment: production
+    team: data-science
+    deployment-type: on-premise
+    security-classification: internal
+  
+  commonAnnotations:
+    contact: "data-team@company.com"
+    security-contact: "security@company.com"
+    documentation: "https://wiki.company.com/jupyterhub"
+    backup.company.com/schedule: "0 3 * * *"
+    compliance.company.com/standard: "corporate-2024"
+
+# -----------------------------------------------------------------------------
+# Hub Configuration for Corporate Environment
+# -----------------------------------------------------------------------------
+hub:
+  image:
+    repository: quay.io/jupyterhub/k8s-hub
+    tag: "4.2.0"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+  resourcePolicy:
+    qosClass: "Guaranteed"  # Critical service
+    enforceResourceLimits: true
+
+  # Database for user data (SQLite with persistence)
+  db:
+    type: sqlite-pvc
+    pvc:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: "fast-ssd"  # Use corporate storage class
+      size: 20Gi
+      annotations:
+        backup.company.com/policy: "daily-retain-30"
+
+  # Corporate authentication configuration
+  config:
+    JupyterHub:
+      admin_access: true
+      allow_named_servers: false
+      cleanup_servers: true
+
+    Authenticator:
+      # Will be overridden by LDAP configuration
+      admin_users:
+        - "admin@company.com"
+        - "data-lead@company.com"
+
+  service:
+    type: ClusterIP
+    annotations:
+      internal-lb.company.com/zone: "datacenter-1"
+
+  extraLabels:
+    criticality: high
+    monitoring.company.com/alert-level: critical
+
+  extraAnnotations:
+    security.company.com/scan-level: strict
+    backup.company.com/priority: high
+
+# -----------------------------------------------------------------------------
+# Authentication - Corporate LDAP Integration
+# -----------------------------------------------------------------------------
+auth:
+  type: ldap
+
+  ldap:
+    server:
+      address: "ldaps://ad.company.com:636"
+      use_ssl: true
+      ca_certs: "corporate-ldap-ca"  # Secret name for LDAP CA
+    
+    bind_dn_template:
+      - "CN={username},OU=Employees,DC=company,DC=com"
+      - "{username}@company.com"
+    
+    user_search_base: "OU=Employees,DC=company,DC=com"
+    user_attribute: "sAMAccountName"
+    lookup_dn: false
+    
+    allowed_groups:
+      - "CN=Data Scientists,OU=Groups,DC=company,DC=com"
+      - "CN=Analysts,OU=Groups,DC=company,DC=com"
+      - "CN=Researchers,OU=Groups,DC=company,DC=com"
+    
+    admin_groups:
+      - "CN=Data Science Admins,OU=Groups,DC=company,DC=com"
+
+# -----------------------------------------------------------------------------
+# HTTPS Configuration for Corporate PKI
+# -----------------------------------------------------------------------------
+proxy:
+  https:
+    enabled: true
+    type: secret
+    hosts:
+      - jupyter.company.com
+      - notebooks.company.com
+      - jupyter.internal.company.com
+    
+    redirect: true
+    
+    secret:
+      name: jupyter-corporate-tls
+    
+    corporateCA:
+      enabled: true
+      certificates:
+        # Corporate Root CA
+        corporate-root-ca: |
+          -----BEGIN CERTIFICATE-----
+          # Replace with your actual corporate root CA certificate
+          # This should be obtained from your IT Security team
+          MIIDXTCCAkWgAwIBAgIJAKL0UG+0nZKzMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
+          BAYTAkNPMRMwEQYDVQQIDApDb3Jwb3JhdGUxITAfBgNVBAoMGENvcnBvcmF0ZSBJ
+          VCBEZXBhcnRtZW50MQswCQYDVQQGEwJVUzAeFw0yMDAxMDEwMDAwMDBaFw0zMDEy
+          MzEyMzU5NTlaMEUxCzAJBgNVBAYTAkNPMRMwEQYDVQQIDApDb3Jwb3JhdGUxITAf
+          BgNVBAoMGENvcnBvcmF0ZSBJVCBEZXBhcnRtZW50MQswCQYDVQQGEwJVUzCCASIw
+          DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMExample...
+          -----END CERTIFICATE-----
+        
+        # Intermediate CA (if applicable)
+        corporate-intermediate-ca: |
+          -----BEGIN CERTIFICATE-----
+          # Replace with your intermediate CA certificate if your PKI uses one
+          MIIDXTCCAkWgAwIBAgIJAKL0UG+0nZKzMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
+          BAYTAkNPMRMwEQYDVQQIDApDb3Jwb3JhdGUxITAfBgNVBAoMGENvcnBvcmF0ZSBJ
+          VCBEZXBhcnRtZW50MQswCQYDVQQGEwJVUzAeFw0yMDAxMDEwMDAwMDBaFw0zMDEy
+          MzEyMzU5NTlaMEUxCzAJBgNVBAYTAkNPMRMwEQYDVQQIDApDb3Jwb3JhdGUxITAf
+          BgNVBAoMGENvcnBvcmF0ZSBJVCBEZXBhcnRtZW50MQswCQYDVQQGEwJVUzCCASIw
+          DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMExample...
+          -----END CERTIFICATE-----
+    
+    corporate:
+      ca: "Corporate IT Security CA"
+      contact: "security@company.com"
+      renewalProcess: "Submit ServiceNow ticket RITM-CERT-REQUEST"
+    
+    management:
+      autoUpdate:
+        enabled: true
+        schedule: "0 2 * * 0"  # Weekly check on Sunday 2 AM
+        warningDays: 30
+        email: "data-team@company.com"
+        webhook: "https://alerts.company.com/webhook/cert-expiry"
+
+  chp:
+    image:
+      repository: quay.io/jupyterhub/configurable-http-proxy
+      tag: "4.5.4"
+      pullPolicy: IfNotPresent
+    
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  service:
+    type: LoadBalancer  # Using MetalLB for on-premise
+    port: 80
+    httpsPort: 443
+    annotations:
+      metallb.universe.tf/address-pool: jupyter-pool
+      metallb.universe.tf/allow-shared-ip: jupyter-shared
+      internal-lb.company.com/zone: "datacenter-1"
+
+  extraLabels:
+    gateway-type: https
+    network.company.com/zone: dmz
+
+  extraAnnotations:
+    security.company.com/ssl-policy: corporate-standard
+    monitoring.company.com/endpoint-check: enabled
+
+# -----------------------------------------------------------------------------
+# Single-user Server Configuration for Data Scientists
+# -----------------------------------------------------------------------------
+singleuser:
+  image:
+    repository: quay.io/jupyter/datascience-notebook
+    tag: "python-3.11"  # Specific version for consistency
+    pullPolicy: IfNotPresent
+
+  defaultUrl: "/lab"
+
+  # Resource tiers for different user types
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "1Gi"
+    limits:
+      cpu: "4000m"  # Allow burst for data processing
+      memory: "8Gi"
+
+  # Persistent storage for user notebooks
+  storage:
+    type: dynamic
+    capacity: 50Gi  # Generous storage for datasets
+    
+    dynamic:
+      storageClassName: "fast-ssd"
+      pvcNameTemplate: "jupyter-{username}"
+      volumeNameTemplate: "volume-{username}"
+      storageAccessModes:
+        - ReadWriteOnce
+
+    homeMountPath: /home/jovyan
+
+  # User environment variables
+  extraEnv:
+    JUPYTER_ENABLE_LAB: "yes"
+    GRANT_SUDO: "no"  # Security: no sudo access
+    CHOWN_HOME: "yes"
+    CHOWN_HOME_OPTS: "-R"
+    # Corporate proxy settings (if needed)
+    HTTP_PROXY: "http://proxy.company.com:8080"
+    HTTPS_PROXY: "http://proxy.company.com:8080"
+    NO_PROXY: "localhost,127.0.0.1,.company.com,.local"
+
+  # Resource profiles for different user needs
+  profileList:
+    - display_name: "Standard Environment (2 CPU, 4 GB RAM)"
+      description: "Standard data science environment for most users"
+      default: true
+      kubespawner_override:
+        cpu_limit: 2
+        cpu_guarantee: 0.2
+        mem_limit: "4G"
+        mem_guarantee: "1G"
+        image: "quay.io/jupyter/datascience-notebook:python-3.11"
+        
+    - display_name: "Large Environment (4 CPU, 8 GB RAM)"
+      description: "High-performance environment for large datasets"
+      kubespawner_override:
+        cpu_limit: 4
+        cpu_guarantee: 0.5
+        mem_limit: "8G"
+        mem_guarantee: "2G"
+        image: "quay.io/jupyter/datascience-notebook:python-3.11"
+        
+    - display_name: "R Environment (2 CPU, 4 GB RAM)"
+      description: "R-focused environment for statistical analysis"
+      kubespawner_override:
+        cpu_limit: 2
+        cpu_guarantee: 0.2
+        mem_limit: "4G"
+        mem_guarantee: "1G"
+        image: "quay.io/jupyter/r-notebook:r-4.3"
+
+    - display_name: "Deep Learning (8 CPU, 16 GB RAM, GPU)"
+      description: "GPU-enabled environment for machine learning (if available)"
+      kubespawner_override:
+        cpu_limit: 8
+        cpu_guarantee: 1
+        mem_limit: "16G"
+        mem_guarantee: "4G"
+        image: "quay.io/jupyter/tensorflow-notebook:python-3.11"
+        # Uncomment if GPU nodes are available
+        # extra_resource_limits:
+        #   nvidia.com/gpu: 1
+        # node_selector:
+        #   accelerator: nvidia-gpu
+
+  # Node selection for user pods
+  nodeSelector:
+    workload-type: jupyter-user
+    
+  extraLabels:
+    workload-type: interactive
+    user-tier: standard
+
+  extraAnnotations:
+    backup.company.com/user-data: enabled
+    monitoring.company.com/collect-metrics: "true"
+    security.company.com/isolation-level: standard
+
+# -----------------------------------------------------------------------------
+# RBAC and Security
+# -----------------------------------------------------------------------------
+rbac:
+  create: true
+
+security:
+  podSecurityContext:
+    fsGroup: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+
+  networkPolicy:
+    enabled: true
+    ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              network-policy.company.com/allow-jupyter: "true"
+    egress:
+      - to:
+        - namespaceSelector: {}
+        ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+
+# -----------------------------------------------------------------------------
+# Monitoring and Observability
+# -----------------------------------------------------------------------------
+monitoring:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      namespace: monitoring
+      labels:
+        prometheus: corporate
+
+# -----------------------------------------------------------------------------
+# Persistence Configuration
+# -----------------------------------------------------------------------------
+persistence:
+  storageClass: "fast-ssd"  # Corporate SSD storage class
+  
+  hub:
+    enabled: true
+    size: 20Gi
+    accessModes:
+      - ReadWriteOnce
+
+  users:
+    enabled: true
+    size: 50Gi
+    accessModes:
+      - ReadWriteOnce
+
+# -----------------------------------------------------------------------------
+# External Services (Corporate Data Sources)
+# -----------------------------------------------------------------------------
+external:
+  # Internal S3-compatible storage (MinIO)
+  s3:
+    enabled: true
+    endpoint: "https://minio.company.com:9000"
+    bucket: "jupyter-datasets"
+    useSSL: true
+    caCert: "minio-ca-cert"  # Secret name
+
+  # Corporate database (if applicable)
+  database:
+    enabled: false
+    # Configuration would go here if using external PostgreSQL
+
+# -----------------------------------------------------------------------------
+# Development and Testing (Disabled for Production)
+# -----------------------------------------------------------------------------
+development:
+  debug: false
+  dummyAuth:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# Advanced Configuration
+# -----------------------------------------------------------------------------
+advanced:
+  extraConfig:
+    corporate-config: |
+      # Corporate-specific JupyterHub configuration
+      
+      # Set corporate branding
+      c.JupyterHub.template_paths = ['/usr/local/etc/jupyterhub/templates']
+      c.JupyterHub.logo_file = '/usr/local/etc/jupyterhub/static/corporate-logo.png'
+      
+      # Corporate idle timeout (4 hours)
+      c.JupyterHub.shutdown_on_logout = True
+      c.Spawner.start_timeout = 600
+      
+      # Corporate resource limits
+      c.Spawner.mem_limit = '8G'
+      c.Spawner.cpu_limit = 4
+      
+      # Data protection settings
+      c.JupyterHub.cookie_max_age_days = 1  # Daily re-authentication
+      c.JupyterHub.reset_db = False  # Preserve user data
+      
+      # Corporate audit logging
+      c.Application.log_level = 'INFO'
+      c.JupyterHub.extra_log_file = '/var/log/jupyterhub/audit.log'
+
+# -----------------------------------------------------------------------------
+# Corporate Network Configuration
+# -----------------------------------------------------------------------------
+# Ingress configuration for internal access
+ingress:
+  enabled: false  # Using LoadBalancer instead
+  # Could be configured for corporate ingress controller if needed
+
+# Service mesh configuration (if Istio is used)
+serviceMesh:
+  enabled: false
+  # Configuration would go here if service mesh is deployed

@@ -1,0 +1,55 @@
+# Hub service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "my-jupyterhub.hub.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8081
+      targetPort: 8081
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "my-jupyterhub.hub.selectorLabels" . | nindent 4 }}
+
+---
+# Proxy API service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "my-jupyterhub.proxy-api.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.proxy.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8001
+      targetPort: 8001
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "my-jupyterhub.proxy.selectorLabels" . | nindent 4 }}
+
+---
+# Proxy public service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "my-jupyterhub.proxy-public.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.proxy.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.proxy.service.type }}
+  ports:
+    - port: {{ .Values.proxy.service.port }}
+      targetPort: {{ .Values.proxy.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "my-jupyterhub.proxy.selectorLabels" . | nindent 4 }}

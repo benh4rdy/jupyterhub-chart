@@ -1,0 +1,84 @@
+# Hub configuration
+hub:
+  image:
+    repository: jupyterhub/k8s-hub
+    tag: "3.0.0"
+    pullPolicy: IfNotPresent
+  config:
+    JupyterHub:
+      authenticator_class: 'jupyterhub.auth.DummyAuthenticator'
+      spawner_class: 'kubespawner.KubeSpawner'
+    DummyAuthenticator:
+      password: 'test'
+    Authenticator:
+      admin_users:
+        - admin
+  
+  serviceAccount:
+    create: true
+    name: my-custom-hub-my-jupyterhub-hub
+
+  db:
+    type: sqlite-pvc
+    pvc:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ""
+      size: 1Gi
+
+# Proxy configuration  
+proxy:
+  service:
+    type: ClusterIP
+    port: 80
+  chp:
+    image:
+      repository: jupyterhub/configurable-http-proxy
+      tag: "4.5.2"
+      pullPolicy: IfNotPresent
+  https:
+    enabled: false
+
+# Single-user server configuration
+singleuser:
+  podNameTemplate: 'jupyter-{username}'
+  image:
+    repository: jupyter/minimal-notebook
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  defaultUrl: "/lab"
+  
+  cpu:
+    limit: 1
+    guarantee: 0.1
+  
+  memory:
+    limit: "1G"
+    guarantee: "256M"
+  
+  storage:
+    type: none  # Start without persistent storage to eliminate PVC issues
+    # Uncomment below when ready for persistent storage:
+    # type: dynamic
+    # capacity: 5Gi
+    # dynamic:
+    #   storageClass: ""
+    #   pvcNameTemplate: claim-{username}
+    #   volumeNameTemplate: volume-{username}
+    #   storageAccessModes:
+    #     - ReadWriteOnce
+  
+  startTimeout: 600  # Increased timeout for slower environments
+
+# RBAC
+rbac:
+  create: true
+
+# Security context
+securityContext:
+  fsGroup: 1000
+
+# Global values
+global:
+  imagePullSecrets: []

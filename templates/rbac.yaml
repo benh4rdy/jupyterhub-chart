@@ -1,0 +1,70 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "my-jupyterhub.hub.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+  {{- with .Values.hub.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "my-jupyterhub.hub.fullname" . }}
+  labels:
+    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["pods", "persistentvolumeclaims", "events", "services", "namespaces"]
+  verbs: ["get", "watch", "list", "create", "delete", "patch"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "delete", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "my-jupyterhub.hub.fullname" . }}
+  labels:
+    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "my-jupyterhub.hub.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "my-jupyterhub.hub.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+
+---
+{{- if eq .Values.hub.db.type "sqlite-pvc" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "my-jupyterhub.hub.fullname" . }}-db-dir
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.hub.db.pvc.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.hub.db.pvc.size }}
+  {{- if .Values.hub.db.pvc.storageClassName }}
+  storageClassName: {{ .Values.hub.db.pvc.storageClassName }}
+  {{- end }}
+{{- end }}

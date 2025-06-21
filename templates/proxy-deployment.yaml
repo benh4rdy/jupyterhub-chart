@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-jupyterhub.fullname" . }}-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.proxy.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "my-jupyterhub.proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "my-jupyterhub.proxy.labels" . | nindent 8 }}
+        hub.jupyter.org/network-access-hub: "true"
+    spec:
+      containers:
+      - name: chp
+        image: "{{ .Values.proxy.chp.image.repository }}:{{ .Values.proxy.chp.image.tag }}"
+        imagePullPolicy: {{ .Values.proxy.chp.image.pullPolicy }}
+        command:
+          - configurable-http-proxy
+          - --ip=0.0.0.0
+          - --api-ip=0.0.0.0
+          - --api-port=8001
+          - --default-target=http://{{ include "my-jupyterhub.hub.fullname" . }}:8081
+          - --error-target=http://{{ include "my-jupyterhub.hub.fullname" . }}:8081/hub/error
+        env:
+        - name: CONFIGPROXY_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hub-secret
+              key: proxy.token
+        ports:
+        - name: http
+          containerPort: 8000
+        - name: api
+          containerPort: 8001
+          protocol: TCP
+        {{- if .Values.proxy.chp.extraPorts }}
+        {{- toYaml .Values.proxy.chp.extraPorts | nindent 8 }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.proxy.chp.resources | nindent 10 }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.chp.extraEnv }}
+      {{- toYaml . | nindent 8 }}
+      {{- end }}

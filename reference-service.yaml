@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    meta.helm.sh/release-name: jupyterhub
+    meta.helm.sh/release-namespace: jupyterhub
+  creationTimestamp: "2025-06-20T12:21:08Z"
+  finalizers:
+  - service.kubernetes.io/load-balancer-cleanup
+  labels:
+    app: jupyterhub
+    app.kubernetes.io/component: proxy-public
+    app.kubernetes.io/instance: jupyterhub
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: jupyterhub
+    chart: jupyterhub-4.2.0
+    component: proxy-public
+    helm.sh/chart: jupyterhub-4.2.0
+    heritage: Helm
+    release: jupyterhub
+  name: proxy-public
+  namespace: jupyterhub
+  resourceVersion: "13430"
+  uid: 86dda7ea-34b8-4f9d-b752-5b556345d7c8
+spec:
+  allocateLoadBalancerNodePorts: true
+  clusterIP: 10.96.6.224
+  clusterIPs:
+  - 10.96.6.224
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    nodePort: 32467
+    port: 80
+    protocol: TCP
+    targetPort: http
+  selector:
+    app: jupyterhub
+    component: proxy
+    release: jupyterhub
+  sessionAffinity: None
+  type: LoadBalancer
+status:
+  loadBalancer:
+    ingress:
+    - ip: 172.18.0.7
+      ipMode: Proxy
+      ports:
+      - port: 80
+        protocol: TCP

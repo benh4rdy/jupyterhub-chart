@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "my-jupyterhub.hub.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "my-jupyterhub.hub.labels" . | nindent 4 }}
+data:
+  jupyterhub_config.py: |
+    import os
+    import sys
+    
+    # Add z2jh.py to path
+    sys.path.insert(0, '/usr/local/etc/jupyterhub/')
+    from z2jh import get_config, set_config_if_not_none
+    
+    # Basic JupyterHub configuration
+    c.JupyterHub.spawner_class = 'kubespawner.KubeSpawner'
+    
+    # KUBERNETES NETWORKING - Critical for pod-to-pod communication
+    c.JupyterHub.hub_ip = '0.0.0.0'  # Bind to all interfaces inside pod
+    c.JupyterHub.hub_connect_ip = '{{ include "my-jupyterhub.hub.fullname" . }}'  # Service name for external connections
+    c.JupyterHub.hub_port = 8081
+    
+    # Database configuration
+    {{- if eq .Values.hub.db.type "sqlite-pvc" }}
+    c.JupyterHub.db_url = 'sqlite:////srv/jupyterhub/jupyterhub.sqlite'
+    {{- else if eq .Values.hub.db.type "mysql" }}
+    c.JupyterHub.db_url = get_config("hub.db.url")
+    {{- else if eq .Values.hub.db.type "postgresql" }}
+    c.JupyterHub.db_url = get_config("hub.db.url")
+    {{- end }}
+    
+    # Proxy configuration
+    c.ConfigurableHTTPProxy.api_url = 'http://{{ include "my-jupyterhub.proxy-api.fullname" . }}:8001'
+    c.ConfigurableHTTPProxy.should_start = False
+    
+    # Spawner configuration
+    c.KubeSpawner.namespace = '{{ .Release.Namespace }}'
+    c.KubeSpawner.start_timeout = {{ .Values.singleuser.startTimeout }}
+    c.KubeSpawner.http_timeout = 120
+    c.KubeSpawner.pod_name_template = '{{ .Values.singleuser.podNameTemplate }}'
+    
+    # Single-user server configuration
+    c.KubeSpawner.image = '{{ .Values.singleuser.image.repository }}:{{ .Values.singleuser.image.tag }}'
+    
+    # Authentication configuration
+    {{- if eq .Values.hub.config.JupyterHub.authenticator_class "jupyterhub.auth.DummyAuthenticator" }}
+    c.JupyterHub.authenticator_class = 'jupyterhub.auth.DummyAuthenticator'
+    c.DummyAuthenticator.password = get_config('hub.config.DummyAuthenticator.password', '')
+    {{- end }}
+    
+    # Admin users
+    {{- if .Values.hub.config.Authenticator.admin_users }}
+    c.Authenticator.admin_users = {{ .Values.hub.config.Authenticator.admin_users | toJson }}
+    {{- end }}
+    
+    # HTTPS configuration for self-signed certs
+    {{- if .Values.proxy.https.enabled }}
+    {{- if eq .Values.proxy.https.type "secret" }}
+    c.JupyterHub.ssl_cert = '/usr/local/etc/jupyterhub/secret/tls.crt'
+    c.JupyterHub.ssl_key = '/usr/local/etc/jupyterhub/secret/tls.key'
+    {{- end }}
+    {{- end }}
+    
+    # Additional user configuration
+    {{- if .Values.singleuser.extraEnv }}
+    c.KubeSpawner.environment = {
+    {{- range $key, $value := .Values.singleuser.extraEnv }}
+        '{{ $key }}': '{{ $value }}',
+    {{- end }}
+    }
+    {{- end }}
+    
+    # Node selector for user pods
+    {{- if .Values.singleuser.nodeSelector }}
+    c.KubeSpawner.node_selector = {{ .Values.singleuser.nodeSelector | toJson }}
+    {{- end }}
+    
+    # Labels for user pods
+    c.KubeSpawner.common_labels = {
+        'app.kubernetes.io/name': '{{ include "my-jupyterhub.name" . }}',
+        'app.kubernetes.io/instance': '{{ .Release.Name }}',
+        'app.kubernetes.io/component': 'singleuser-server',
+    }
+    
+    # Load any additional configuration
+    if os.path.exists('/usr/local/etc/jupyterhub/config/extra_config.py'):
+        exec(open('/usr/local/etc/jupyterhub/config/extra_config.py').read())
+
+  z2jh.py: |
+    """
+    Helper functions for zero-to-jupyterhub configuration
+    """
+    import os
+    from ruamel.yaml import YAML
+
+    def get_config(config_path, default=None):
+        """
+        Find a config item in the chart's values.yaml or return default
+        """
+        # This is a simplified stand-in. In a real z2jh, this would
+        # parse the full values.yaml. Here, we'll simulate it.
+        # For this chart, we'll just pass the full singleuser dict.
+        if config_path == 'singleuser':
+            yaml = YAML()
+            # The full values file isn't available directly in the template,
+            # so we reconstruct the relevant part from the template engine
+            singleuser_config_str = '''
+            {{- toYaml .Values.singleuser | nindent 12 }}
+            '''
+            return yaml.load(singleuser_config_str)
+
+        env_name = config_path.replace('.', '_').upper()
+        return os.environ.get(env_name, default)
+    
+    def set_config_if_not_none(cparent, name, config_path, default=None):
+        """
+        Set a config item if it's not None
+        """
+        value = get_config(config_path, default)
+        if value is not None:
+            setattr(cparent, name, value)
